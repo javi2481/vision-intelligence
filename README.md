@@ -1,6 +1,6 @@
 # Vision Intelligence — Producto B (Sprint 1)
 
-Orquestar, no inventar. Pipeline Docker-first: **Webcam → MediaMTX → PaddleX PP-Vehicle → Adaptador epp-core → AMIS/ECharts** (+ JetLinks opcional).
+Orquestar, no inventar. Pipeline Docker-first: **Webcam → MediaMTX → PaddleX vehicle_attribute_recognition → Adaptador epp-core → AMIS/ECharts** (+ JetLinks opcional).
 
 Filosofía EPP v4.6 Punto 12: cero código de IA propio. Solo traducción JSON, consolidación de tracks y configuración.
 

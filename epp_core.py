@@ -5,7 +5,7 @@ Contrato sagrado del Producto B — Vision Intelligence (EPP v4.6, Punto 12).
 Única pieza portable: entra un dict (detección PaddleX), sale un PerceptionEvent.
 Sin lógica de reglas de negocio; solo normalización y consolidación de tracks.
 
-Asumción del JSON PaddleX PP-Vehicle (por detección)::
+Asumción del JSON PaddleX vehicle_attribute_recognition (por detección)::
 
     {
       \"track_id\": \"42\",           # o int; se normaliza a str
