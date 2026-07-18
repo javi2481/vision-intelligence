@@ -111,6 +111,7 @@ services:
       - EVENTS_BUFFER_SIZE=${EVENTS_BUFFER_SIZE:-500}
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       - JETLINKS_WEBHOOK_URL=${JETLINKS_WEBHOOK_URL:-}
+      - JETLINKS_API_KEY=${JETLINKS_API_KEY:-demo}
       - STATIC_DIR=/app
     volumes:
       # Hot-reload en desarrollo

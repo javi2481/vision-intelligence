@@ -42,6 +42,7 @@ MAX_DETECTIONS_PER_TRACK = int(os.getenv("MAX_DETECTIONS_PER_TRACK", "60"))
 EVENTS_BUFFER_SIZE = int(os.getenv("EVENTS_BUFFER_SIZE", "500"))
 SWEEP_INTERVAL_SECONDS = float(os.getenv("SWEEP_INTERVAL_SECONDS", "1.0"))
 JETLINKS_WEBHOOK_URL = os.getenv("JETLINKS_WEBHOOK_URL", "")  # vacío = modo MVP local
+JETLINKS_API_KEY = os.getenv("JETLINKS_API_KEY", "demo")
 STATIC_DIR = os.getenv("STATIC_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -145,7 +146,11 @@ async def _forward_to_jetlinks(events: list[PerceptionEvent]) -> None:
         import httpx
 
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(JETLINKS_WEBHOOK_URL, json=payload)
+            resp = await client.post(
+                JETLINKS_WEBHOOK_URL,
+                json=payload,
+                headers={"x-api-key": JETLINKS_API_KEY},
+            )
             resp.raise_for_status()
             logger.info("Forwarded %d events to JetLinks", len(events))
     except Exception as exc:  # degradación elegante

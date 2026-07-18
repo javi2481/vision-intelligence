@@ -110,7 +110,10 @@ Con JetLinks real, setear en `.env`:
 
 ```env
 JETLINKS_WEBHOOK_URL=http://jetlinks:8848/api/v1/vision/events
+JETLINKS_API_KEY=demo
 ```
+
+Todo `POST` hacia `JETLINKS_WEBHOOK_URL` incluye el header `x-api-key` con el valor de `JETLINKS_API_KEY` (default `demo`). Sin `JETLINKS_WEBHOOK_URL` configurada no se intenta ningún forward (modo MVP: solo log).
 
 El contrato de `POST /webhook/rules` no cambia.
 
