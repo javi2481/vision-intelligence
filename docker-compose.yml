@@ -72,7 +72,8 @@ services:
       context: .
       dockerfile: Dockerfile.paddlex
       args:
-        BASE_IMAGE: ${PADDLE_GPU_BASE_IMAGE:-paddlepaddle/paddle:2.6.1-gpu-cuda11.2-cudnn8}
+        BASE_IMAGE: ${PADDLE_GPU_BASE_IMAGE:-paddlepaddle/paddle:3.0.0-gpu-cuda11.8-cudnn8.9-trt8.6}
+        DEVICE: gpu
     image: vision-intelligence/paddlex-gpu:local
     container_name: vi-paddlex-gpu
     restart: unless-stopped

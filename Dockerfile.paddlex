@@ -6,9 +6,12 @@
 ARG BASE_IMAGE=paddlepaddle/paddle:3.0.0
 FROM ${BASE_IMAGE}
 
+ARG DEVICE=cpu
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VI_DEVICE=${DEVICE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
@@ -20,10 +23,14 @@ RUN pip install --no-cache-dir "paddlex[cv,serving]>=3.0.0" || \
     pip install --no-cache-dir "paddlex[cv]" "paddlex[serving]" || \
     pip install --no-cache-dir paddlex
 
+COPY entrypoint.paddlex.sh /entrypoint.paddlex.sh
+RUN chmod +x /entrypoint.paddlex.sh
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=10 \
   CMD curl -fsS http://127.0.0.1:8080/docs >/dev/null || curl -fsS http://127.0.0.1:8080/openapi.json >/dev/null || exit 1
 
-# --device cpu: sin GPU en este host. Primera vez descarga pesos (~1-2 GB).
-CMD ["paddlex", "--serve", "--pipeline", "vehicle_attribute_recognition", "--port", "8080", "--device", "cpu"]
+# VI_DEVICE (via ARG DEVICE): cpu por defecto, gpu en el perfil paddlex-gpu.
+# exec en el entrypoint mantiene paddlex como PID1 (SIGTERM/stop limpios).
+ENTRYPOINT ["/entrypoint.paddlex.sh"]
