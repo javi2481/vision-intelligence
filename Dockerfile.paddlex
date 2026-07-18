@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1
+# PaddleX 3.x: pipeline oficial vehicle_attribute_recognition
+# (PP-Vehicle era de PaddleDetection; no existe en PaddleX 3).
+# GPU: BASE_IMAGE=paddlepaddle/paddle:2.6.1-gpu-cuda11.2-cudnn8
+
+ARG BASE_IMAGE=paddlepaddle/paddle:3.0.0
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir "paddlex[cv,serving]>=3.0.0" || \
+    pip install --no-cache-dir "paddlex[cv]" "paddlex[serving]" || \
+    pip install --no-cache-dir paddlex
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=10 \
+  CMD curl -fsS http://127.0.0.1:8080/docs >/dev/null || curl -fsS http://127.0.0.1:8080/openapi.json >/dev/null || exit 1
+
+# --device cpu: sin GPU en este host. Primera vez descarga pesos (~1-2 GB).
+CMD ["paddlex", "--serve", "--pipeline", "vehicle_attribute_recognition", "--port", "8080", "--device", "cpu"]

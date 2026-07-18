@@ -1,0 +1,169 @@
+{
+  "type": "page",
+  "title": "Vision Intelligence — Dashboard",
+  "name": "vision-dashboard",
+  "toolbar": [
+    {
+      "type": "tpl",
+      "tpl": "<span class='label label-info'>epp-core 1.0-draft</span>"
+    }
+  ],
+  "body": [
+    {
+      "type": "service",
+      "name": "eventsService",
+      "api": {
+        "method": "get",
+        "url": "/events?limit=200",
+        "adaptor": "return { ...payload, data: { count: payload.count, total_emitted: payload.total_emitted, tracks_active: payload.tracks_active, degraded: payload.degraded, events: payload.events || [], items: payload.events || [] } };"
+      },
+      "interval": 2000,
+      "body": [
+        {
+          "type": "grid",
+          "columns": [
+            {
+              "md": 3,
+              "body": {
+                "type": "card",
+                "header": { "title": "Eventos consolidados" },
+                "body": {
+                  "type": "tpl",
+                  "className": "text-xl font-bold",
+                  "tpl": "${total_emitted|default:0}"
+                }
+              }
+            },
+            {
+              "md": 3,
+              "body": {
+                "type": "card",
+                "header": { "title": "En buffer" },
+                "body": {
+                  "type": "tpl",
+                  "className": "text-xl font-bold",
+                  "tpl": "${count|default:0}"
+                }
+              }
+            },
+            {
+              "md": 3,
+              "body": {
+                "type": "card",
+                "header": { "title": "Tracks activos" },
+                "body": {
+                  "type": "tpl",
+                  "className": "text-xl font-bold",
+                  "tpl": "${tracks_active|default:0}"
+                }
+              }
+            },
+            {
+              "md": 3,
+              "body": {
+                "type": "card",
+                "header": { "title": "Estado PaddleX" },
+                "body": {
+                  "type": "tpl",
+                  "tpl": "${degraded ? \"<span class='label label-warning'>DEGRADADO</span>\" : \"<span class='label label-success'>OK</span>\"}"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "chart",
+          "name": "vehicleTypeChart",
+          "height": 280,
+          "api": {
+            "method": "get",
+            "url": "/events?limit=200",
+            "adaptor": "var events = (payload && payload.events) ? payload.events : []; var counts = {}; events.forEach(function(e){ var t = (e.payload && e.payload.vehicle_type) ? e.payload.vehicle_type : 'unknown'; counts[t] = (counts[t]||0)+1; }); var keys = Object.keys(counts); return { data: { title: { text: 'Distribución por tipo de vehículo', left: 'center' }, tooltip: { trigger: 'item' }, series: [{ type: 'pie', radius: '55%', data: keys.map(function(k){ return { name: k, value: counts[k] }; }) }] } };"
+          },
+          "interval": 2000,
+          "config": {
+            "title": { "text": "Distribución por tipo de vehículo", "left": "center" },
+            "tooltip": { "trigger": "item" },
+            "series": [
+              {
+                "type": "pie",
+                "radius": "55%",
+                "data": []
+              }
+            ]
+          }
+        },
+        {
+          "type": "chart",
+          "name": "eventsTimeline",
+          "height": 260,
+          "api": {
+            "method": "get",
+            "url": "/events?limit=200",
+            "adaptor": "var events = (payload && payload.events) ? payload.events : []; var buckets = {}; events.forEach(function(e){ var ts = e.observed_at || e.occurred_at; if(!ts) return; var d = new Date(ts); var key = d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'); buckets[key]=(buckets[key]||0)+1; }); var keys = Object.keys(buckets).sort(); return { data: { title: { text: 'Eventos por minuto (buffer)', left: 'center' }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: keys }, yAxis: { type: 'value', minInterval: 1 }, series: [{ type: 'line', smooth: true, areaStyle: {}, data: keys.map(function(k){ return buckets[k]; }) }] } };"
+          },
+          "interval": 2000,
+          "config": {
+            "title": { "text": "Eventos por minuto (buffer)", "left": "center" },
+            "tooltip": { "trigger": "axis" },
+            "xAxis": { "type": "category", "data": [] },
+            "yAxis": { "type": "value", "minInterval": 1 },
+            "series": [{ "type": "line", "smooth": true, "data": [] }]
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "crud",
+          "name": "eventsTable",
+          "syncLocation": false,
+          "source": "${events}",
+          "columns": [
+            {
+              "name": "entity_type",
+              "label": "Entity",
+              "type": "text"
+            },
+            {
+              "name": "candidate_ids",
+              "label": "Candidates",
+              "type": "tpl",
+              "tpl": "${candidate_ids|join:', '}"
+            },
+            {
+              "name": "occurred_at",
+              "label": "Occurred At",
+              "type": "datetime",
+              "format": "YYYY-MM-DD HH:mm:ss"
+            },
+            {
+              "name": "confidence",
+              "label": "Confidence",
+              "type": "tpl",
+              "tpl": "<% var c = data.confidence || 0; var cls = c > 0.8 ? 'success' : (c > 0.5 ? 'warning' : 'danger'); %><span class='label label-<%= cls %>'><%= (c*100).toFixed(1) %>%</span>"
+            },
+            {
+              "name": "payload.vehicle_type",
+              "label": "Tipo",
+              "type": "text"
+            },
+            {
+              "name": "payload.color",
+              "label": "Color",
+              "type": "text"
+            },
+            {
+              "name": "payload.plate_text",
+              "label": "Patente",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

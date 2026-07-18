@@ -1,0 +1,193 @@
+# Vision Intelligence — Sprint 1 (Producto B / EPP v4.6 Punto 12)
+# Orquestar, no inventar. Un solo comando: docker compose up --build
+#
+# Perfiles:
+#   (default)  mediamtx + paddlex + adapter + bridge
+#   --profile demo   → bridge en DEMO_MODE (sin webcam/GPU)
+#   --profile rules  → JetLinks opcional
+#   --profile gpu    → PaddleX con runtime NVIDIA (requiere NVIDIA Container Toolkit)
+
+name: vision-intelligence
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  epp-network:
+    name: epp-network
+    driver: bridge
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: vi-mediamtx
+    restart: unless-stopped
+    ports:
+      - "${MEDIAMTX_RTSP_PORT:-8554}:8554"
+      - "${MEDIAMTX_HLS_PORT:-8888}:8888"
+      - "${MEDIAMTX_WEBRTC_PORT:-8889}:8889"
+      - "${MEDIAMTX_API_PORT:-9997}:9997"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      MTX_LOGLEVEL: info
+    networks:
+      - epp-network
+    # Imagen distroless: sin /bin/sh ni wget → no healthcheck in-container
+    logging: *default-logging
+
+  paddlex:
+    build:
+      context: .
+      dockerfile: Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex:local
+    container_name: vi-paddlex
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_PORT:-8080}:8080"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Cache de modelos entre reinicios
+      - paddlex-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
+  # Variante GPU (activar: docker compose --profile gpu up --build)
+  paddlex-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_GPU_BASE_IMAGE:-paddlepaddle/paddle:2.6.1-gpu-cuda11.2-cudnn8}
+    image: vision-intelligence/paddlex-gpu:local
+    container_name: vi-paddlex-gpu
+    restart: unless-stopped
+    runtime: nvidia
+    ports:
+      - "${PADDLEX_PORT:-8080}:8080"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - paddlex-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
+  adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile.adapter
+    image: vision-intelligence/adapter:local
+    container_name: vi-adapter
+    restart: unless-stopped
+    ports:
+      - "${ADAPTER_PORT:-8000}:8000"
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TRACK_TTL_SECONDS=${TRACK_TTL_SECONDS:-10}
+      - MAX_DETECTIONS_PER_TRACK=${MAX_DETECTIONS_PER_TRACK:-60}
+      - EVENTS_BUFFER_SIZE=${EVENTS_BUFFER_SIZE:-500}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - JETLINKS_WEBHOOK_URL=${JETLINKS_WEBHOOK_URL:-}
+      - STATIC_DIR=/app
+    volumes:
+      # Hot-reload en desarrollo
+      - ./epp_core.py:/app/epp_core.py
+      - ./adapter.py:/app/adapter.py
+      - ./amis_dashboard.json:/app/amis_dashboard.json
+      - ./dashboard.html:/app/dashboard.html
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    logging: *default-logging
+
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+    image: vision-intelligence/bridge:local
+    container_name: vi-bridge
+    restart: unless-stopped
+    depends_on:
+      mediamtx:
+        condition: service_started
+      adapter:
+        condition: service_healthy
+    environment:
+      - RTSP_URL=${RTSP_URL:-rtsp://mediamtx:8554/webcam}
+      - ADAPTER_INGEST_URL=${ADAPTER_INGEST_URL:-http://adapter:8000/ingest}
+      - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
+      - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
+      - BRIDGE_FPS=${BRIDGE_FPS:-2}
+      - DEMO_MODE=${DEMO_MODE:-0}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - BACKOFF_INITIAL=${BACKOFF_INITIAL:-1}
+      - BACKOFF_MAX=${BACKOFF_MAX:-30}
+      - HTTP_TIMEOUT=${HTTP_TIMEOUT:-30}
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  # Bridge demo: consolida tracks + AMIS sin webcam ni PaddleX
+  bridge-demo:
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+    image: vision-intelligence/bridge:local
+    container_name: vi-bridge-demo
+    restart: unless-stopped
+    depends_on:
+      adapter:
+        condition: service_healthy
+    environment:
+      - ADAPTER_INGEST_URL=http://adapter:8000/ingest
+      - DEMO_MODE=1
+      - BRIDGE_FPS=2
+      - LOG_LEVEL=INFO
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  jetlinks:
+    profiles: ["rules"]
+    image: jetlinks/jetlinks-standalone:latest
+    container_name: vi-jetlinks
+    restart: unless-stopped
+    ports:
+      - "${JETLINKS_PORT:-8848}:8848"
+    environment:
+      - JAVA_OPTS=-Xmx512m
+    networks:
+      - epp-network
+    logging: *default-logging
+
+volumes:
+  paddlex-models:
+    name: vi-paddlex-models

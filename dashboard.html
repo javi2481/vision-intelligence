@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vision Intelligence — AMIS</title>
+  <!-- Baidu AMIS + ECharts (ecosistema chino, CDN oficial) -->
+  <link rel="stylesheet" href="https://unpkg.com/amis@6.7.0/sdk/sdk.css" />
+  <link rel="stylesheet" href="https://unpkg.com/amis@6.7.0/sdk/helper.css" />
+  <link rel="stylesheet" href="https://unpkg.com/amis@6.7.0/sdk/iconfont.css" />
+  <style>
+    html, body, #root { height: 100%; margin: 0; background: #f0f2f5; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <!-- SDK AMIS es autocontenido (sin app React/Vue propia). ECharts vía CDN. -->
+  <script src="https://unpkg.com/amis@6.7.0/sdk/sdk.js"></script>
+  <script src="https://unpkg.com/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script>
+    /**
+     * Shell mínimo: carga el schema JSON declarativo.
+     * Cero lógica de negocio — FastAPI normaliza, JetLinks decide, AMIS muestra.
+     */
+    (async function () {
+      const res = await fetch('/static/amis_dashboard.json');
+      const schema = await res.json();
+      const amis = amisRequire('amis/embed');
+      amis.embed('#root', schema, {}, {
+        theme: 'cxd',
+        updateLocation: function () {},
+        notify: function (type, msg) { console.log('[amis]', type, msg); }
+      });
+    })();
+  </script>
+</body>
+</html>
