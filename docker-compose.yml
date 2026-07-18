@@ -192,6 +192,37 @@ services:
       - epp-network
     logging: *default-logging
 
+  # Sink de reglas headless (MVP): decide sobre PerceptionEvents reenviados
+  # por el adaptador. Alternativa reproducible/inspeccionable a la UI SQL de
+  # jetlinks (arriba), que queda como opción manual. Ambos corren bajo el
+  # mismo profile sin conflicto.
+  rules-sink:
+    profiles: ["rules"]
+    build:
+      context: .
+      dockerfile: Dockerfile.rules-sink
+    image: vision-intelligence/rules-sink:local
+    container_name: vi-rules-sink
+    restart: unless-stopped
+    ports:
+      - "${RULES_SINK_PORT:-8850}:8850"
+    environment:
+      - RULES_SINK_API_KEY=${RULES_SINK_API_KEY:-demo}
+      - RULES_SINK_MAX_ALERTS=${RULES_SINK_MAX_ALERTS:-100}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      # Hot-reload en desarrollo (paridad con adapter)
+      - ./rules_sink.py:/app/rules_sink.py
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8850/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    logging: *default-logging
+
 volumes:
   paddlex-models:
     name: vi-paddlex-models
