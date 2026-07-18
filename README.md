@@ -7,7 +7,7 @@ Filosofía EPP v4.6 Punto 12: cero código de IA propio. Solo traducción JSON, 
 ## Arquitectura
 
 ```text
-[Host FFmpeg] --RTSP--> [MediaMTX] --RTSP--> [Bridge 2 FPS]
+[Host FFmpeg] --RTSP--> [MediaMTX] --RTSP--> [Bridge 1 FPS]
                                               |
                                               v
                     [PaddleX vehicle_attribute_recognition]  (CPU o GPU)
@@ -34,6 +34,33 @@ Separación estricta:
 ### Mejora de ingesta (vs. JPEG directo al adaptador)
 
 El bridge envía frames a **PaddleX** y solo JSON al adaptador. El adaptador permanece portable a edge (RK3588): entra `dict`, sale `PerceptionEvent`.
+
+## Bridge: FPS, ancho de inferencia y medición
+
+### Variables de entorno del bridge
+
+| Variable | Default | Propósito |
+|----------|---------|-----------|
+| `BRIDGE_FPS` | `1` | Frecuencia de muestreo para JPEG-encode + inferencia PaddleX. |
+| `BRIDGE_MAX_WIDTH` | `1280` | Ancho máximo de la imagen que se envía a inferencia. Sobre este umbral se reduce solo la copia de inferencia (ver abajo); a la par o por debajo no hay resize. |
+| `BRIDGE_METRICS_EVERY` | `30` | Cada cuántos frames inferidos se emite una línea de métricas en el log. |
+
+### Frame de alta resolución vs. frame de inferencia
+
+Cada frame capturado (`frame_hires`) se mantiene sin modificar en todo momento (reservado para overlay/OCR futuro). Solo si `frame_hires` supera `BRIDGE_MAX_WIDTH` de ancho se deriva un `frame_infer` reducido (`cv2.resize` + `INTER_AREA`) exclusivamente para JPEG-encode e inferencia PaddleX; si el ancho está dentro del límite, `frame_infer` es el mismo frame (sin copia, sin costo extra). Las detecciones que devuelve PaddleX vienen en coordenadas de `frame_infer`, y el bridge las reescala de vuelta a coordenadas de `frame_hires` (bbox nativo) antes de enviarlas al adaptador — el contrato `epp_core.py` y el adaptador no ven ninguna diferencia.
+
+### Medición de FPS/CPU
+
+Dos formas de medir el impacto de estos ajustes:
+
+- **Log en proceso**: cada `BRIDGE_METRICS_EVERY` frames inferidos, el bridge emite una línea `metrics infer_ms=... encode_ms=... effective_fps=... resized=... infer_w=...` con la duración de inferencia/encode del último frame de la ventana y el FPS efectivo promedio de la ventana.
+- **`docker stats` (externo, sin cambios de código)**:
+
+  ```bash
+  docker stats vi-bridge
+  ```
+
+  Útil para comparar CPU%/memoria antes/después del cambio con una fuente `> 1280` px de ancho.
 
 ## Requisitos
 

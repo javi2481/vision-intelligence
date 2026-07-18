@@ -40,7 +40,7 @@ PADDLEX_URL = os.getenv("PADDLEX_URL", "http://paddlex:8080")
 PADDLEX_PREDICT_PATH = os.getenv(
     "PADDLEX_PREDICT_PATH", "/vehicle-attribute-recognition"
 )
-FPS = float(os.getenv("BRIDGE_FPS", "2"))
+FPS = float(os.getenv("BRIDGE_FPS", "1"))
 FRAME_INTERVAL = 1.0 / max(FPS, 0.1)
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))
 DEMO_MODE = os.getenv("DEMO_MODE", "0") == "1"
@@ -48,6 +48,11 @@ BACKOFF_INITIAL = float(os.getenv("BACKOFF_INITIAL", "1.0"))
 BACKOFF_MAX = float(os.getenv("BACKOFF_MAX", "30.0"))
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "30.0"))
 IOU_THRESHOLD = float(os.getenv("TRACK_IOU_THRESHOLD", "0.3"))
+# Ancho máximo de inferencia: sobre este umbral se deriva frame_infer
+# (downscale) desde frame_hires; a la par o por debajo, pass-through sin copia.
+BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "1280"))
+# Cada N frames inferidos se emite una línea de métricas (infer_ms/encode_ms/fps).
+BRIDGE_METRICS_EVERY = int(os.getenv("BRIDGE_METRICS_EVERY", "30"))
 
 
 class IoUTracker:
@@ -116,6 +121,39 @@ def _encode_jpeg(frame) -> Optional[bytes]:
     if not ok:
         return None
     return buf.tobytes()
+
+
+def _maybe_resize_for_infer(frame_hires) -> tuple[Any, float, float]:
+    """Deriva frame_infer de frame_hires; downscale solo si excede BRIDGE_MAX_WIDTH.
+
+    frame_hires se mantiene intacto en todos los casos (para overlay/OCR futuro).
+    Retorna (frame_infer, scale_x, scale_y) donde scale_* multiplica coordenadas
+    infer -> hires; pass-through devuelve el mismo objeto sin copia y 1.0/1.0.
+    """
+    h, w = frame_hires.shape[:2]
+    if w <= BRIDGE_MAX_WIDTH:
+        return frame_hires, 1.0, 1.0
+    new_w = BRIDGE_MAX_WIDTH
+    new_h = max(1, round(h * new_w / w))
+    frame_infer = cv2.resize(
+        frame_hires, (new_w, new_h), interpolation=cv2.INTER_AREA
+    )
+    return frame_infer, w / new_w, h / new_h
+
+
+def _scale_detections(
+    dets: list[dict[str, Any]], scale_x: float, scale_y: float
+) -> list[dict[str, Any]]:
+    """Escala bbox de coords frame_infer -> frame_hires. Pass-through si 1.0/1.0.
+
+    No toca ninguna otra clave del dict de detección.
+    """
+    if scale_x == 1.0 and scale_y == 1.0:
+        return dets
+    for d in dets:
+        x1, y1, x2, y2 = d["bbox"]
+        d["bbox"] = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
+    return dets
 
 
 def _parse_attr_labels(labels: list[Any], scores: list[Any]) -> tuple[Optional[str], Optional[str]]:
@@ -321,10 +359,12 @@ async def run_loop() -> None:
                 logger.info("RTSP connected: %s", RTSP_URL)
                 backoff = BACKOFF_INITIAL
                 last_sent = 0.0
+                infer_frame_count = 0
+                metrics_window_start = time.monotonic()
 
                 while True:
-                    ok, frame = cap.read()
-                    if not ok or frame is None:
+                    ok, frame_hires = cap.read()
+                    if not ok or frame_hires is None:
                         raise RuntimeError("RTSP read failed")
 
                     now = time.monotonic()
@@ -333,20 +373,48 @@ async def run_loop() -> None:
                         continue
                     last_sent = now
 
-                    jpeg = _encode_jpeg(frame)
+                    frame_infer, scale_x, scale_y = _maybe_resize_for_infer(
+                        frame_hires
+                    )
+                    resized = not (scale_x == 1.0 and scale_y == 1.0)
+
+                    encode_start = time.monotonic()
+                    jpeg = _encode_jpeg(frame_infer)
+                    encode_ms = (time.monotonic() - encode_start) * 1000.0
                     if jpeg is None:
                         continue
 
+                    infer_start = time.monotonic()
                     detections = await _infer_paddlex(client, jpeg)
+                    infer_ms = (time.monotonic() - infer_start) * 1000.0
                     if detections is None:
                         await _notify_degraded(client)
                         continue
+
+                    _scale_detections(detections, scale_x, scale_y)
 
                     await _post_json(
                         client,
                         ADAPTER_INGEST_URL,
                         {"detections": detections},
                     )
+
+                    infer_frame_count += 1
+                    if infer_frame_count % BRIDGE_METRICS_EVERY == 0:
+                        window_s = time.monotonic() - metrics_window_start
+                        effective_fps = (
+                            BRIDGE_METRICS_EVERY / window_s if window_s > 0 else 0.0
+                        )
+                        logger.info(
+                            "metrics infer_ms=%.1f encode_ms=%.1f "
+                            "effective_fps=%.2f resized=%s infer_w=%d",
+                            infer_ms,
+                            encode_ms,
+                            effective_fps,
+                            resized,
+                            frame_infer.shape[1],
+                        )
+                        metrics_window_start = time.monotonic()
 
             except asyncio.CancelledError:
                 raise

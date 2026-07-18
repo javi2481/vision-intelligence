@@ -146,7 +146,8 @@ services:
       - ADAPTER_INGEST_URL=${ADAPTER_INGEST_URL:-http://adapter:8000/ingest}
       - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
       - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
-      - BRIDGE_FPS=${BRIDGE_FPS:-2}
+      - BRIDGE_FPS=${BRIDGE_FPS:-1}
+      - BRIDGE_MAX_WIDTH=${BRIDGE_MAX_WIDTH:-1280}
       - JPEG_QUALITY=${JPEG_QUALITY:-80}
       - DEMO_MODE=${DEMO_MODE:-0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -172,7 +173,7 @@ services:
     environment:
       - ADAPTER_INGEST_URL=http://adapter:8000/ingest
       - DEMO_MODE=1
-      - BRIDGE_FPS=2
+      - BRIDGE_FPS=1
       - LOG_LEVEL=INFO
     networks:
       - epp-network
