@@ -145,6 +145,7 @@ services:
       - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
       - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
       - BRIDGE_FPS=${BRIDGE_FPS:-2}
+      - JPEG_QUALITY=${JPEG_QUALITY:-80}
       - DEMO_MODE=${DEMO_MODE:-0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - BACKOFF_INITIAL=${BACKOFF_INITIAL:-1}
