@@ -31,7 +31,7 @@
           "type": "grid",
           "columns": [
             {
-              "md": 3,
+              "md": 2,
               "body": {
                 "type": "card",
                 "header": { "title": "Eventos consolidados" },
@@ -43,7 +43,7 @@
               }
             },
             {
-              "md": 3,
+              "md": 2,
               "body": {
                 "type": "card",
                 "header": { "title": "En buffer" },
@@ -55,7 +55,7 @@
               }
             },
             {
-              "md": 3,
+              "md": 2,
               "body": {
                 "type": "card",
                 "header": { "title": "Tracks activos" },
@@ -84,7 +84,8 @@
                 "name": "rulesHealthService",
                 "api": {
                   "method": "get",
-                  "url": "/rules/health"
+                  "url": "/rules/health",
+                  "adaptor": "return { status: 0, data: { available: !!(payload && payload.available) } };"
                 },
                 "interval": 3000,
                 "body": {
@@ -151,24 +152,24 @@
           "api": {
             "method": "get",
             "url": "/rules/alerts",
-            "adaptor": "return { ...payload, data: { available: payload.available, count: payload.count || 0, alerts: payload.alerts || [] } };"
+            "adaptor": "return { status: 0, data: { available: !!(payload && payload.available), count: (payload && payload.count) || 0, alerts: (payload && payload.alerts) || [] } };"
           },
           "interval": 3000,
           "body": {
             "type": "panel",
-            "title": "Alertas de reglas (rules-sink)",
+            "title": "Alertas de reglas (rules-sink) — ${count|default:0}",
             "body": [
               {
                 "type": "tpl",
                 "visibleOn": "this.available === false",
                 "className": "text-muted",
-                "tpl": "Rules-sink no disponible (perfil \"rules\" apagado)."
+                "tpl": "Rules-sink no disponible (perfil \"rules\" apagado o relay caído)."
               },
               {
                 "type": "tpl",
                 "visibleOn": "this.available !== false && (!this.alerts || !this.alerts.length)",
                 "className": "text-muted",
-                "tpl": "Sin alertas registradas."
+                "tpl": "Sin alertas. En demo: el adaptador solo reenvía si JETLINKS_WEBHOOK_URL apunta a rules-sink."
               },
               {
                 "type": "list",
@@ -189,8 +190,11 @@
           "type": "crud",
           "name": "eventsTable",
           "syncLocation": true,
+          "initFetch": true,
+          "primaryField": "occurred_at",
+          "placeholder": "Sin eventos en el buffer (¿bridge emitiendo?)",
           "filter": {
-            "title": "",
+            "title": "Filtro de eventos",
             "submitText": "Buscar",
             "body": [
               {
@@ -198,15 +202,22 @@
                 "name": "plate",
                 "label": "Patente",
                 "clearable": true,
-                "placeholder": "Filtrar por patente…"
+                "placeholder": "Filtrar por patente… (vacío = todos)"
               }
             ]
           },
           "api": {
             "method": "get",
             "url": "/events?limit=200&plate=${plate}",
-            "adaptor": "return { ...payload, data: { items: payload.events || [] } };"
+            "adaptor": "var items = (payload && payload.events) ? payload.events : []; return { status: 0, data: { items: items, count: items.length, total_emitted: payload && payload.total_emitted } };"
           },
+          "headerToolbar": [
+            {
+              "type": "tpl",
+              "tpl": "Mostrando <strong>${count|default:0}</strong> evento(s) en tabla"
+            },
+            "reload"
+          ],
           "columns": [
             {
               "name": "payload.plate_text",
