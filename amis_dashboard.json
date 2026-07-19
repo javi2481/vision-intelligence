@@ -6,6 +6,14 @@
     {
       "type": "tpl",
       "tpl": "<span class='label label-info'>epp-core 1.0-draft</span>"
+    },
+    {
+      "type": "button",
+      "label": "Ver stream (HLS)",
+      "level": "link",
+      "actionType": "url",
+      "url": "${hlsUrl}",
+      "blank": true
     }
   ],
   "body": [
@@ -68,6 +76,26 @@
                   "tpl": "${degraded ? \"<span class='label label-warning'>DEGRADADO</span>\" : \"<span class='label label-success'>OK</span>\"}"
                 }
               }
+            },
+            {
+              "md": 3,
+              "body": {
+                "type": "service",
+                "name": "rulesHealthService",
+                "api": {
+                  "method": "get",
+                  "url": "/rules/health"
+                },
+                "interval": 3000,
+                "body": {
+                  "type": "card",
+                  "header": { "title": "Estado reglas" },
+                  "body": {
+                    "type": "tpl",
+                    "tpl": "${available ? \"<span class='label label-success'>Disponible</span>\" : \"<span class='label label-default'>No disponible</span>\"}"
+                  }
+                }
+              }
             }
           ]
         },
@@ -118,11 +146,74 @@
           "type": "divider"
         },
         {
+          "type": "service",
+          "name": "rulesAlertsService",
+          "api": {
+            "method": "get",
+            "url": "/rules/alerts",
+            "adaptor": "return { ...payload, data: { available: payload.available, count: payload.count || 0, alerts: payload.alerts || [] } };"
+          },
+          "interval": 3000,
+          "body": {
+            "type": "panel",
+            "title": "Alertas de reglas (rules-sink)",
+            "body": [
+              {
+                "type": "tpl",
+                "visibleOn": "this.available === false",
+                "className": "text-muted",
+                "tpl": "Rules-sink no disponible (perfil \"rules\" apagado)."
+              },
+              {
+                "type": "tpl",
+                "visibleOn": "this.available !== false && (!this.alerts || !this.alerts.length)",
+                "className": "text-muted",
+                "tpl": "Sin alertas registradas."
+              },
+              {
+                "type": "list",
+                "visibleOn": "this.available !== false && this.alerts && this.alerts.length > 0",
+                "source": "${alerts}",
+                "listItem": {
+                  "title": "${plate_text|default:\"—\"}",
+                  "subTitle": "${reason} · ${ts}"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
           "type": "crud",
           "name": "eventsTable",
-          "syncLocation": false,
-          "source": "${events}",
+          "syncLocation": true,
+          "filter": {
+            "title": "",
+            "submitText": "Buscar",
+            "body": [
+              {
+                "type": "input-text",
+                "name": "plate",
+                "label": "Patente",
+                "clearable": true,
+                "placeholder": "Filtrar por patente…"
+              }
+            ]
+          },
+          "api": {
+            "method": "get",
+            "url": "/events?limit=200&plate=${plate}",
+            "adaptor": "return { ...payload, data: { items: payload.events || [] } };"
+          },
           "columns": [
+            {
+              "name": "payload.plate_text",
+              "label": "Patente",
+              "type": "tpl",
+              "tpl": "<span style='font-weight:bold;font-size:1.05em;'>${payload.plate_text|default:\"—\"}</span>"
+            },
             {
               "name": "entity_type",
               "label": "Entity",
@@ -154,11 +245,6 @@
             {
               "name": "payload.color",
               "label": "Color",
-              "type": "text"
-            },
-            {
-              "name": "payload.plate_text",
-              "label": "Patente",
               "type": "text"
             }
           ]

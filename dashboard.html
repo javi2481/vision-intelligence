@@ -26,7 +26,8 @@
       const res = await fetch('/static/amis_dashboard.json');
       const schema = await res.json();
       const amis = amisRequire('amis/embed');
-      amis.embed('#root', schema, {}, {
+      const hlsUrl = `http://${window.location.hostname}:8888/webcam`;
+      amis.embed('#root', schema, { hlsUrl }, {
         theme: 'cxd',
         updateLocation: function () {},
         notify: function (type, msg) { console.log('[amis]', type, msg); }

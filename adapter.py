@@ -44,6 +44,7 @@ SWEEP_INTERVAL_SECONDS = float(os.getenv("SWEEP_INTERVAL_SECONDS", "1.0"))
 JETLINKS_WEBHOOK_URL = os.getenv("JETLINKS_WEBHOOK_URL", "")  # vacío = modo MVP local
 JETLINKS_API_KEY = os.getenv("JETLINKS_API_KEY", "demo")
 STATIC_DIR = os.getenv("STATIC_DIR", os.path.dirname(os.path.abspath(__file__)))
+RULES_SINK_URL = os.getenv("RULES_SINK_URL", "http://rules-sink:8850")
 
 
 class TrackBucket(BaseModel):
@@ -277,10 +278,24 @@ async def ingest(request: Request) -> JSONResponse:
 
 
 @app.get("/events")
-async def get_events(limit: int = 100) -> dict[str, Any]:
-    """Buffer de PerceptionEvent para AMIS / ECharts."""
+async def get_events(limit: int = 100, plate: Optional[str] = None) -> dict[str, Any]:
+    """Buffer de PerceptionEvent para AMIS / ECharts.
+
+    `plate` es un filtro de presentación (substring case-insensitive sobre
+    `payload.plate_text`), aplicado ANTES de `limit`. Omitirlo preserva el
+    comportamiento exacto previo. Distinto del matching `patente:` de
+    rules-sink (candidate_ids) — no son intercambiables.
+    """
     limit = max(1, min(limit, EVENTS_BUFFER_SIZE))
-    items = list(events_buffer)[:limit]
+    source = list(events_buffer)
+    if plate:
+        needle = plate.lower()
+        source = [
+            e
+            for e in source
+            if needle in (e.get("payload", {}).get("plate_text") or "").lower()
+        ]
+    items = source[:limit]
     return {
         "count": len(items),
         "total_emitted": _stats["emitted"],
@@ -288,6 +303,35 @@ async def get_events(limit: int = 100) -> dict[str, Any]:
         "degraded": _stats["paddlex_degraded"],
         "events": items,
     }
+
+
+async def _relay_rules_sink(path: str) -> dict[str, Any]:
+    """GET read-only a rules-sink; nunca propaga error — {available:false} en su lugar."""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{RULES_SINK_URL}{path}")
+            resp.raise_for_status()
+            return {"available": True, **resp.json()}
+    except Exception as exc:
+        logger.warning("rules-sink unreachable at %s%s (%s)", RULES_SINK_URL, path, exc)
+        return {"available": False}
+
+
+@app.get("/rules/health")
+async def rules_health() -> dict[str, Any]:
+    """Relay read-only de rules-sink /health. Perfil `rules` off => {available:false}, nunca 5xx."""
+    return await _relay_rules_sink("/health")
+
+
+@app.get("/rules/alerts")
+async def rules_alerts() -> dict[str, Any]:
+    """Relay read-only de rules-sink /alerts. Falla/no disponible => {available:false, count:0, alerts:[]}."""
+    result = await _relay_rules_sink("/alerts")
+    if not result.get("available"):
+        return {"available": False, "count": 0, "alerts": []}
+    return result
 
 
 @app.post("/webhook/rules")
