@@ -1,0 +1,62 @@
+# Pipeline OCR de PaddleX pineado a PP-OCRv5 (mobile).
+#
+# Por que existe este archivo: el pipeline `OCR` por default de paddlex==3.7.2
+# carga PP-OCRv6_medium_det/rec, cuyo formato de modelo (PIR) no es compatible
+# con el motor de inferencia de la imagen base `paddlepaddle/paddle:3.0.0`
+# (error: "Type of attribute: strides is not right" al crear el predictor de
+# `PP-OCRv6_medium_det`). Ver discovery sdd/ocr-plate/discovery-paddle-ir-mismatch.
+#
+# Fix: en vez de subir la imagen base compartida (que rompe/arriesga el
+# servicio `vehicle_attribute_recognition` en la misma imagen), se fuerza el
+# pipeline OCR a los modelos PP-OCRv5 (mobile, livianos para CPU), que SI son
+# compatibles con paddle:3.0.0. Servido via `paddlex --serve --pipeline
+# /opt/paddlex/pipelines/ocr_v5_mobile.yaml` (VI_PIPELINE en paddlex-ocr).
+#
+# Basado en el config default de paddlex (`paddlex --get_pipeline_config OCR`),
+# solo se cambian los model_name de deteccion/reconocimiento y se desactiva el
+# doc-preprocessor (no aplica a crops de patente, ahorra CPU).
+
+pipeline_name: OCR
+
+text_type: general
+
+use_doc_preprocessor: False
+use_textline_orientation: True
+
+SubPipelines:
+  DocPreprocessor:
+    pipeline_name: doc_preprocessor
+    use_doc_orientation_classify: False
+    use_doc_unwarping: False
+    SubModules:
+      DocOrientationClassify:
+        module_name: doc_text_orientation
+        model_name: PP-LCNet_x1_0_doc_ori
+        model_dir: null
+      DocUnwarping:
+        module_name: image_unwarping
+        model_name: UVDoc
+        model_dir: null
+
+SubModules:
+  TextDetection:
+    module_name: text_detection
+    model_name: PP-OCRv5_mobile_det
+    model_dir: null
+    limit_side_len: 64
+    limit_type: min
+    max_side_limit: 4000
+    thresh: 0.3
+    box_thresh: 0.6
+    unclip_ratio: 1.5
+  TextLineOrientation:
+    module_name: textline_orientation
+    model_name: PP-LCNet_x1_0_textline_ori
+    model_dir: null
+    batch_size: 6
+  TextRecognition:
+    module_name: text_recognition
+    model_name: PP-OCRv5_mobile_rec
+    model_dir: null
+    batch_size: 6
+    score_thresh: 0.0

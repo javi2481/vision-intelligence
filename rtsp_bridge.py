@@ -5,9 +5,13 @@ PaddleX 3.x: pipeline `vehicle_attribute_recognition`
   POST /vehicle-attribute-recognition  { "image": "<base64>" }
 
 PP-Vehicle (PaddleDetection) no existe en PaddleX 3. Este pipeline detecta
-vehículos + atributos (color/tipo). No trae track_id ni patente OCR:
-asignamos track_id con IoU tracker mínimo (orquestación, no modelo propio).
-Patente queda null hasta cablear OCR opcional.
+vehículos + atributos (color/tipo). No trae track_id: asignamos track_id con
+IoU tracker mínimo (orquestación, no modelo propio).
+
+OCR de patente (opcional, ENABLE_PLATE_OCR): tras escalar el bbox a coords
+frame_hires, recorta y consulta un segundo servicio PaddleX (pipeline OCR,
+`paddlex-ocr`) por detección elegible; merge en `d["plate"]`. Caída/timeout
+del OCR deja `plate=None` sin degradar el pipeline attr primario.
 
 Resiliencia: backoff RTSP, degradación si PaddleX cae, DEMO_MODE sin cámara.
 """
@@ -19,6 +23,7 @@ import base64
 import logging
 import os
 import random
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -53,6 +58,22 @@ IOU_THRESHOLD = float(os.getenv("TRACK_IOU_THRESHOLD", "0.3"))
 BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "1280"))
 # Cada N frames inferidos se emite una línea de métricas (infer_ms/encode_ms/fps).
 BRIDGE_METRICS_EVERY = int(os.getenv("BRIDGE_METRICS_EVERY", "30"))
+
+# --- OCR de patente (servicio paddlex-ocr, opcional — ver docker-compose.yml) ---
+PADDLEX_OCR_URL = os.getenv("PADDLEX_OCR_URL", "http://paddlex-ocr:8081")
+ENABLE_PLATE_OCR = os.getenv("ENABLE_PLATE_OCR", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+OCR_MIN_SCORE = float(os.getenv("OCR_MIN_SCORE", "0.7"))
+OCR_EVERY_N_FRAMES = max(1, int(os.getenv("OCR_EVERY_N_FRAMES", "5")))
+OCR_TOPK = max(1, int(os.getenv("OCR_TOPK", "3")))
+OCR_HTTP_TIMEOUT = float(os.getenv("OCR_HTTP_TIMEOUT", "5"))
+# Patente: 5-8 alfanuméricos tras normalizar (upper + descartar no-alnum).
+PLATE_REGEX = re.compile(r"^[A-Z0-9]{5,8}$")
+# Guard de crop degenerado: lado mínimo en px para intentar OCR.
+_OCR_MIN_CROP_PX = 8
 
 
 class IoUTracker:
@@ -154,6 +175,42 @@ def _scale_detections(
         x1, y1, x2, y2 = d["bbox"]
         d["bbox"] = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
     return dets
+
+
+def _crop_bbox(frame, bbox: list[float]) -> Optional[Any]:
+    """Recorta `frame` al bbox, clippeado a los bordes de la imagen.
+
+    Devuelve None si el área resultante es degenerada (guard mínimo), en vez
+    de encodear un crop inválido.
+    """
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = bbox
+    x1 = max(0, min(int(round(x1)), w))
+    y1 = max(0, min(int(round(y1)), h))
+    x2 = max(0, min(int(round(x2)), w))
+    y2 = max(0, min(int(round(y2)), h))
+    if (x2 - x1) < _OCR_MIN_CROP_PX or (y2 - y1) < _OCR_MIN_CROP_PX:
+        return None
+    return frame[y1:y2, x1:x2]
+
+
+def _parse_plate(
+    rec_texts: list[Any], rec_scores: list[Any]
+) -> Optional[dict[str, Any]]:
+    """Normaliza rec_texts/rec_scores del OCR y devuelve el match de mayor score.
+
+    Normalización: upper + descartar no-alfanumérico. Filtro: regex de
+    patente 5-8 caracteres (`PLATE_REGEX`). None si ningún texto matchea.
+    """
+    best: Optional[dict[str, Any]] = None
+    for text, score in zip(rec_texts or [], rec_scores or []):
+        normalized = re.sub(r"[^A-Z0-9]", "", str(text).upper())
+        if not PLATE_REGEX.match(normalized):
+            continue
+        score_f = float(score or 0.0)
+        if best is None or score_f > best["score"]:
+            best = {"text": normalized, "score": score_f}
+    return best
 
 
 def _parse_attr_labels(labels: list[Any], scores: list[Any]) -> tuple[Optional[str], Optional[str]]:
@@ -262,7 +319,7 @@ def _normalize_paddlex_result(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "score": m["score"],
                 "color": m["color"],
                 "bbox": m["bbox"],
-                "plate": None,  # OCR patente: fase siguiente
+                "plate": None,  # completado por OCR en run_loop si ENABLE_PLATE_OCR
                 "frame_ts": now,
             }
         )
@@ -323,6 +380,41 @@ async def _infer_paddlex(
     return _normalize_paddlex_result(data)
 
 
+async def _infer_ocr(
+    client: httpx.AsyncClient, jpeg: bytes
+) -> Optional[dict[str, Any]]:
+    """POST base64 a `{PADDLEX_OCR_URL}/ocr` y parsea la mejor patente.
+
+    Aislado del pipeline attr (D4 en design): cualquier excepción/timeout
+    devuelve None sin llamar `_notify_degraded` — OCR caído no degrada el
+    bridge globalmente, solo deja `plate=None` para esa detección.
+    """
+    url = f"{PADDLEX_OCR_URL.rstrip('/')}/ocr"
+    b64 = base64.b64encode(jpeg).decode("ascii")
+    try:
+        resp = await client.post(
+            url, json={"file": b64, "fileType": 1}, timeout=OCR_HTTP_TIMEOUT
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.debug("OCR infer error (isolated, sin degradar): %s", exc)
+        return None
+
+    try:
+        result = data.get("result", data) if isinstance(data, dict) else {}
+        ocr_results = result.get("ocrResults") or []
+        if not ocr_results:
+            return None
+        pruned = ocr_results[0].get("prunedResult") or {}
+        rec_texts = pruned.get("rec_texts") or []
+        rec_scores = pruned.get("rec_scores") or []
+    except Exception as exc:
+        logger.debug("OCR result parse error: %s", exc)
+        return None
+    return _parse_plate(rec_texts, rec_scores)
+
+
 async def _notify_degraded(client: httpx.AsyncClient) -> None:
     await _post_json(client, ADAPTER_INGEST_URL, {"degraded": True})
 
@@ -330,13 +422,16 @@ async def _notify_degraded(client: httpx.AsyncClient) -> None:
 async def run_loop() -> None:
     backoff = BACKOFF_INITIAL
     logger.info(
-        "Bridge start rtsp=%s paddlex=%s%s adapter=%s demo=%s fps=%.1f",
+        "Bridge start rtsp=%s paddlex=%s%s adapter=%s demo=%s fps=%.1f "
+        "ocr_enabled=%s ocr_url=%s",
         RTSP_URL,
         PADDLEX_URL,
         PADDLEX_PREDICT_PATH,
         ADAPTER_INGEST_URL,
         DEMO_MODE,
         FPS,
+        ENABLE_PLATE_OCR,
+        PADDLEX_OCR_URL if ENABLE_PLATE_OCR else "-",
     )
 
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -360,6 +455,7 @@ async def run_loop() -> None:
                 backoff = BACKOFF_INITIAL
                 last_sent = 0.0
                 infer_frame_count = 0
+                ocr_frame_idx = 0
                 metrics_window_start = time.monotonic()
 
                 while True:
@@ -392,6 +488,32 @@ async def run_loop() -> None:
                         continue
 
                     _scale_detections(detections, scale_x, scale_y)
+
+                    # === OCR de patente (opcional, D1: bbox ya en coords
+                    # frame_hires tras _scale_detections — sin 1/scale extra) ===
+                    if ENABLE_PLATE_OCR:
+                        ocr_frame_idx += 1
+                        if ocr_frame_idx % OCR_EVERY_N_FRAMES == 0:
+                            eligible = sorted(
+                                (
+                                    d
+                                    for d in detections
+                                    if d.get("score", 0.0) > OCR_MIN_SCORE
+                                ),
+                                key=lambda d: d["score"],
+                                reverse=True,
+                            )[:OCR_TOPK]
+                            for d in eligible:
+                                crop = _crop_bbox(frame_hires, d["bbox"])
+                                if crop is None:
+                                    continue
+                                crop_jpeg = _encode_jpeg(crop)
+                                if crop_jpeg is None:
+                                    continue
+                                plate = await _infer_ocr(client, crop_jpeg)
+                                if plate:
+                                    d["plate"] = plate
+                    # ============================================================
 
                     await _post_json(
                         client,

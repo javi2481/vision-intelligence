@@ -65,6 +65,38 @@ services:
       start_period: 300s
     logging: *default-logging
 
+  # OCR de patente: misma imagen Dockerfile.paddlex, pipeline OCR, puerto propio.
+  # Independiente del servicio paddlex (attr) — caída de uno no afecta al otro.
+  paddlex-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-ocr:local
+    container_name: vi-paddlex-ocr
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_OCR_PORT:-8081}:8081"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Pineado a PP-OCRv5 (mobile) via config propio: el pipeline "OCR" por
+      # nombre carga PP-OCRv6 por default, incompatible con paddle:3.0.0 (PIR).
+      - VI_PIPELINE=${OCR_PIPELINE_CONFIG:-/opt/paddlex/pipelines/ocr_v5_mobile.yaml}
+      - VI_PORT=8081
+    volumes:
+      # Cache de modelos OCR independiente del cache de attr
+      - paddlex-ocr-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
   # Variante GPU (activar: docker compose --profile gpu up --build)
   paddlex-gpu:
     profiles: ["gpu"]
@@ -154,6 +186,12 @@ services:
       - BACKOFF_INITIAL=${BACKOFF_INITIAL:-1}
       - BACKOFF_MAX=${BACKOFF_MAX:-30}
       - HTTP_TIMEOUT=${HTTP_TIMEOUT:-30}
+      - PADDLEX_OCR_URL=${PADDLEX_OCR_URL:-http://paddlex-ocr:8081}
+      - ENABLE_PLATE_OCR=${ENABLE_PLATE_OCR:-false}
+      - OCR_MIN_SCORE=${OCR_MIN_SCORE:-0.7}
+      - OCR_EVERY_N_FRAMES=${OCR_EVERY_N_FRAMES:-5}
+      - OCR_TOPK=${OCR_TOPK:-3}
+      - OCR_HTTP_TIMEOUT=${OCR_HTTP_TIMEOUT:-5}
     networks:
       - epp-network
     logging: *default-logging
@@ -226,3 +264,5 @@ services:
 volumes:
   paddlex-models:
     name: vi-paddlex-models
+  paddlex-ocr-models:
+    name: vi-paddlex-ocr-models

@@ -45,6 +45,27 @@ El bridge envía frames a **PaddleX** y solo JSON al adaptador. El adaptador per
 | `BRIDGE_MAX_WIDTH` | `1280` | Ancho máximo de la imagen que se envía a inferencia. Sobre este umbral se reduce solo la copia de inferencia (ver abajo); a la par o por debajo no hay resize. |
 | `BRIDGE_METRICS_EVERY` | `30` | Cada cuántos frames inferidos se emite una línea de métricas en el log. |
 
+### OCR de patente (servicio `paddlex-ocr`, opcional)
+
+Segundo servicio PaddleX, misma imagen (`Dockerfile.paddlex`), pipeline `OCR` en vez de `vehicle_attribute_recognition`, puerto propio (`8081` por default). `entrypoint.paddlex.sh` selecciona el pipeline vía `VI_PIPELINE`/`VI_PORT`: sin esas variables, sirve el pipeline de atributos como hoy (default preservado).
+
+> **Nota de compatibilidad**: `paddlex-ocr` usa un config propio (`paddlex_ocr_pipeline.yaml`, copiado a `/opt/paddlex/pipelines/ocr_v5_mobile.yaml` en la imagen, seleccionado vía `VI_PIPELINE=${OCR_PIPELINE_CONFIG}`) que pinea el pipeline OCR a **PP-OCRv5 mobile** (det+rec) en vez de los modelos PP-OCRv6 que trae por default `paddlex==3.7.2`. PP-OCRv6 no es compatible con el motor de inferencia de la imagen base `paddlepaddle/paddle:3.0.0` (`PADDLE_BASE_IMAGE`) — falla con `ValueError: Type of attribute: strides is not right` (mismatch de formato de modelo/PIR) al crear el predictor. El servicio `paddlex` (atributos) **no** se toca: sigue con `vehicle_attribute_recognition` y la misma `PADDLE_BASE_IMAGE`, para no arriesgar ese pipeline. Si en el futuro se sube `PADDLE_BASE_IMAGE` a una versión con soporte PP-OCRv6, se puede volver a `VI_PIPELINE=OCR` (o `OCR_PIPELINE_CONFIG` vacío) sin tocar código.
+
+En `rtsp_bridge.py`, después de `_scale_detections(...)` (bbox ya en coords `frame_hires`) y antes del único `_post_json`, si `ENABLE_PLATE_OCR=true`: cada `OCR_EVERY_N_FRAMES` frames, toma hasta `OCR_TOPK` detecciones con `score > OCR_MIN_SCORE` (orden descendente), recorta `frame_hires` en el bbox (clip a bordes + guard de crop degenerado), envía el JPEG a `POST {PADDLEX_OCR_URL}/ocr`, filtra `rec_texts`/`rec_scores` con una regex de patente (5-8 alfanuméricos) y hace merge del texto de mayor score en `d["plate"] = {"text", "score"}` — mismo shape que `_demo_detections`. Sin match o servicio caído/timeout → `plate=None` para esa detección, **sin** marcar el bridge degradado globalmente (`_notify_degraded` queda reservado al pipeline attr primario).
+
+| Variable | Default | Propósito |
+|----------|---------|-----------|
+| `ENABLE_PLATE_OCR` | `false` | Gate general: en `false` no se hace ningún crop/POST/OCR (cero costo extra). |
+| `PADDLEX_OCR_URL` | `http://paddlex-ocr:8081` | Base URL del servicio OCR. |
+| `OCR_MIN_SCORE` | `0.7` | Score mínimo de detección para intentar OCR. |
+| `OCR_EVERY_N_FRAMES` | `5` | Cada cuántos frames (con OCR habilitado) se ejecuta el bloque OCR. |
+| `OCR_TOPK` | `3` | Máximo de detecciones OCR-eadas por frame elegible (evita apilar llamadas secuenciales en CPU con muchos vehículos). |
+| `OCR_HTTP_TIMEOUT` | `5` | Timeout HTTP (segundos) propio del POST a `paddlex-ocr`, independiente de `HTTP_TIMEOUT`. |
+
+**Presupuesto CPU/FPS**: OCR es una segunda inferencia PaddleX secuencial por detección elegible — con `OCR_TOPK=3` y una escena con varios vehículos por encima de `OCR_MIN_SCORE`, el frame puede tardar sensiblemente más que sin OCR en CPU. Ajustar `OCR_EVERY_N_FRAMES` (menos frecuente) y `OCR_TOPK` (menos detecciones por frame) para mantener el FPS efectivo (ver métricas de log) dentro de lo esperado. Medir con `docker stats vi-paddlex-ocr` y la métrica `effective_fps` del bridge antes/después de habilitar.
+
+**Limitación**: el pipeline `OCR` de PaddleX es un OCR genérico (no un modelo de reconocimiento de patentes dedicado). La regex de 5-8 alfanuméricos filtra ruido, pero puede producir falsos positivos/negativos con placas fuera de ese formato o con texto ambiguo en la escena (carteles, logos). Para producción se recomienda evaluar un modelo/pipeline específico de patentes.
+
 ### Frame de alta resolución vs. frame de inferencia
 
 Cada frame capturado (`frame_hires`) se mantiene sin modificar en todo momento (reservado para overlay/OCR futuro). Solo si `frame_hires` supera `BRIDGE_MAX_WIDTH` de ancho se deriva un `frame_infer` reducido (`cv2.resize` + `INTER_AREA`) exclusivamente para JPEG-encode e inferencia PaddleX; si el ancho está dentro del límite, `frame_infer` es el mismo frame (sin copia, sin costo extra). Las detecciones que devuelve PaddleX vienen en coordenadas de `frame_infer`, y el bridge las reescala de vuelta a coordenadas de `frame_hires` (bbox nativo) antes de enviarlas al adaptador — el contrato `epp_core.py` y el adaptador no ven ninguna diferencia.
@@ -89,7 +110,7 @@ ffmpeg -list_devices true -f dshow -i dummy
 inject_webcam.bat "USB Camera"
 ```
 
-> Nota: en PaddleX 3.x el pipeline se llama `vehicle_attribute_recognition` (no existe `PP-Vehicle`; eso era PaddleDetection). La patente OCR queda para una fase siguiente; hoy salen tipo/color + `track_id` vía IoU tracker en el bridge.
+> Nota: en PaddleX 3.x el pipeline se llama `vehicle_attribute_recognition` (no existe `PP-Vehicle`; eso era PaddleDetection). Tipo/color + `track_id` salen siempre (IoU tracker en el bridge); la patente OCR es opcional vía el servicio `paddlex-ocr` — ver [sección OCR de patente](#ocr-de-patente-servicio-paddlex-ocr-opcional) más arriba.
 
 **Linux**
 
@@ -105,7 +126,8 @@ Abrir:
 | Dashboard AMIS | http://localhost:8000 |
 | API eventos | http://localhost:8000/events |
 | Health | http://localhost:8000/health |
-| PaddleX | http://localhost:8080 |
+| PaddleX (attr) | http://localhost:8080 |
+| PaddleX (OCR, si `ENABLE_PLATE_OCR=true`) | http://localhost:8081 |
 | WebRTC / HLS | ver [webrtc_config.md](webrtc_config.md) |
 
 Detener:
