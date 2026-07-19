@@ -71,8 +71,12 @@ PADDLEX_URL = os.getenv("PADDLEX_URL", "http://paddlex:8080")
 PADDLEX_PREDICT_PATH = os.getenv(
     "PADDLEX_PREDICT_PATH", "/vehicle-attribute-recognition"
 )
-FPS = float(os.getenv("BRIDGE_FPS", "1"))
+FPS = float(os.getenv("BRIDGE_FPS", "2"))
 FRAME_INTERVAL = 1.0 / max(FPS, 0.1)
+# Preview fluido: ritmo de lectura/push al dashboard, independiente de la
+# inferencia. Los recuadros se reutilizan del último ciclo PaddleX.
+PREVIEW_FPS = float(os.getenv("PREVIEW_FPS", "15"))
+PREVIEW_INTERVAL = 1.0 / max(PREVIEW_FPS, 0.1)
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))
 DEMO_MODE = os.getenv("DEMO_MODE", "0") == "1"
 BACKOFF_INITIAL = float(os.getenv("BACKOFF_INITIAL", "1.0"))
@@ -689,7 +693,7 @@ async def run_loop() -> None:
     backoff = BACKOFF_INITIAL
     logger.info(
         "Bridge start source=%s media_dir=%s paddlex=%s%s adapter=%s demo=%s "
-        "fps=%.1f ocr_enabled=%s ocr_url=%s",
+        "fps=%.1f preview_fps=%.1f ocr_enabled=%s ocr_url=%s",
         SOURCE_URL,
         MEDIA_DIR,
         PADDLEX_URL,
@@ -697,6 +701,7 @@ async def run_loop() -> None:
         ADAPTER_INGEST_URL,
         DEMO_MODE,
         FPS,
+        PREVIEW_FPS,
         ENABLE_PLATE_OCR,
         PADDLEX_OCR_URL if ENABLE_PLATE_OCR else "-",
     )
@@ -735,13 +740,17 @@ async def run_loop() -> None:
 
                 logger.info("Source connected: %s (rtsp=%s)", source, is_rtsp)
                 backoff = BACKOFF_INITIAL
-                last_sent = 0.0
+                last_infer = 0.0
                 last_media_poll = time.monotonic()
                 infer_frame_count = 0
                 metrics_window_start = time.monotonic()
+                last_detections: list[dict[str, Any]] = []
+                infer_task: Optional[asyncio.Task] = None
+                infer_started_at = 0.0
 
                 while True:
-                    now_poll = time.monotonic()
+                    tick_start = time.monotonic()
+                    now_poll = tick_start
                     if now_poll - last_media_poll >= MEDIA_POLL_INTERVAL:
                         last_media_poll = now_poll
                         polled = await _fetch_current_media(client)
@@ -749,6 +758,8 @@ async def run_loop() -> None:
                         if polled is not None and polled.get("name") != active_name:
                             logger.info("Media selection changed -> %s", polled)
                             selected = polled
+                            if infer_task is not None and not infer_task.done():
+                                infer_task.cancel()
                             break  # reabrir con la nueva fuente en la vuelta externa
 
                     ok, frame_hires = cap.read()
@@ -776,42 +787,62 @@ async def run_loop() -> None:
                         logger.debug("Local source EOF -> rewound: %s", source)
 
                     now = time.monotonic()
-                    if now - last_sent < FRAME_INTERVAL:
-                        await asyncio.sleep(0.01)
-                        continue
-                    last_sent = now
 
-                    infer_start = time.monotonic()
-                    detections, _degraded = await _run_detections(client, frame_hires)
-                    infer_ms = (time.monotonic() - infer_start) * 1000.0
-                    if detections is None:
-                        continue
+                    # Recolectar inferencia en background (no bloquea el preview).
+                    if infer_task is not None and infer_task.done():
+                        try:
+                            detections, _degraded = infer_task.result()
+                            infer_ms = (time.monotonic() - infer_started_at) * 1000.0
+                            if detections is not None:
+                                last_detections = detections
+                                await _post_json(
+                                    client,
+                                    ADAPTER_INGEST_URL,
+                                    {"detections": detections},
+                                )
+                                infer_frame_count += 1
+                                if infer_frame_count % BRIDGE_METRICS_EVERY == 0:
+                                    window_s = time.monotonic() - metrics_window_start
+                                    effective_fps = (
+                                        BRIDGE_METRICS_EVERY / window_s
+                                        if window_s > 0
+                                        else 0.0
+                                    )
+                                    logger.info(
+                                        "metrics infer_ms=%.1f effective_fps=%.2f "
+                                        "preview_fps=%.1f dets=%d",
+                                        infer_ms,
+                                        effective_fps,
+                                        PREVIEW_FPS,
+                                        len(detections),
+                                    )
+                                    metrics_window_start = time.monotonic()
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as exc:
+                            logger.warning("Infer task failed: %s", exc)
+                        infer_task = None
 
-                    await _post_json(
-                        client,
-                        ADAPTER_INGEST_URL,
-                        {"detections": detections},
-                    )
+                    # Lanzar nueva inferencia solo al ritmo BRIDGE_FPS.
+                    if infer_task is None and (now - last_infer) >= FRAME_INTERVAL:
+                        last_infer = now
+                        infer_started_at = now
+                        frame_for_infer = frame_hires.copy()
+                        infer_task = asyncio.create_task(
+                            _run_detections(client, frame_for_infer)
+                        )
 
-                    annotated = _draw_overlay(frame_hires, detections)
+                    # Preview fluido: cada tick pinta el frame actual con
+                    # los últimos recuadros conocidos (pueden tener 1 tick de atraso).
+                    annotated = _draw_overlay(frame_hires, last_detections)
                     preview_jpeg = _encode_jpeg(annotated)
                     if preview_jpeg is not None:
                         await _push_preview_frame(client, preview_jpeg)
 
-                    infer_frame_count += 1
-                    if infer_frame_count % BRIDGE_METRICS_EVERY == 0:
-                        window_s = time.monotonic() - metrics_window_start
-                        effective_fps = (
-                            BRIDGE_METRICS_EVERY / window_s if window_s > 0 else 0.0
-                        )
-                        logger.info(
-                            "metrics infer_ms=%.1f effective_fps=%.2f dets=%d",
-                            infer_ms,
-                            effective_fps,
-                            len(detections),
-                        )
-                        metrics_window_start = time.monotonic()
-
+                    elapsed = time.monotonic() - tick_start
+                    sleep_for = PREVIEW_INTERVAL - elapsed
+                    if sleep_for > 0:
+                        await asyncio.sleep(sleep_for)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

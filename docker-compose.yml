@@ -147,6 +147,7 @@ services:
       - STATIC_DIR=/app
       - MEDIA_DIR=${MEDIA_DIR:-/media}
       - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
+      - PREVIEW_MJPEG_INTERVAL=${PREVIEW_MJPEG_INTERVAL:-0.05}
     volumes:
       # Hot-reload en desarrollo
       - ./epp_core.py:/app/epp_core.py
@@ -190,7 +191,8 @@ services:
       - ADAPTER_PREVIEW_FRAME_URL=${ADAPTER_PREVIEW_FRAME_URL:-http://adapter:8000/preview/frame}
       - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
       - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
-      - BRIDGE_FPS=${BRIDGE_FPS:-1}
+      - BRIDGE_FPS=${BRIDGE_FPS:-2}
+      - PREVIEW_FPS=${PREVIEW_FPS:-15}
       - BRIDGE_MAX_WIDTH=${BRIDGE_MAX_WIDTH:-1280}
       - JPEG_QUALITY=${JPEG_QUALITY:-80}
       - DEMO_MODE=${DEMO_MODE:-0}

@@ -41,7 +41,8 @@ El bridge envía frames a **PaddleX** y solo JSON al adaptador. El adaptador per
 
 | Variable | Default | Propósito |
 |----------|---------|-----------|
-| `BRIDGE_FPS` | `1` | Frecuencia de muestreo para JPEG-encode + inferencia PaddleX. |
+| `BRIDGE_FPS` | `2` | Frecuencia de **inferencia** PaddleX (detección). Independiente del preview. |
+| `PREVIEW_FPS` | `15` | Frecuencia del video en el panel. Cada frame se muestra con los últimos recuadros; la detección corre en paralelo. |
 | `BRIDGE_MAX_WIDTH` | `1280` | Ancho máximo de la imagen que se envía a inferencia. Sobre este umbral se reduce solo la copia de inferencia (ver abajo); a la par o por debajo no hay resize. |
 | `BRIDGE_METRICS_EVERY` | `30` | Cada cuántos frames inferidos se emite una línea de métricas en el log. |
 
@@ -90,7 +91,7 @@ ve afectado (dual output).
 | `SOURCE_URL` | (vacío → `RTSP_URL`) | Generaliza el origen del bridge: URL RTSP o ruta local de archivo. Solo aplica mientras no haya una muestra seleccionada. |
 | `ADAPTER_MEDIA_CURRENT_URL` | `http://adapter:8000/media/current` | URL que el bridge polea para hot-swap. |
 | `ADAPTER_PREVIEW_FRAME_URL` | `http://adapter:8000/preview/frame` | URL donde el bridge empuja el JPEG anotado. |
-| `PREVIEW_MJPEG_INTERVAL` | `0.2` | (adapter) Intervalo de re-emisión de `/preview.mjpg`. |
+| `PREVIEW_MJPEG_INTERVAL` | `0.05` | (adapter) Intervalo de re-emisión de `/preview.mjpg`. |
 
 ### Endpoints nuevos (adapter)
 

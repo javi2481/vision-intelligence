@@ -57,7 +57,7 @@ MEDIA_VIDEO_SUBDIR = "videos"
 MEDIA_IMAGE_SUBDIR = "images"
 MEDIA_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
 MEDIA_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
-PREVIEW_MJPEG_INTERVAL = float(os.getenv("PREVIEW_MJPEG_INTERVAL", "0.2"))
+PREVIEW_MJPEG_INTERVAL = float(os.getenv("PREVIEW_MJPEG_INTERVAL", "0.05"))
 
 
 class TrackBucket(BaseModel):
