@@ -36,6 +36,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] bridge: %(message)s",
 )
 logger = logging.getLogger("rtsp_bridge")
+# Evita spam/latencia: httpx loguea cada POST /preview.frame a INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 RTSP_URL = os.getenv("RTSP_URL", "rtsp://mediamtx:8554/webcam")
 # SOURCE_URL generaliza el origen: RTSP (rtsp://...) o ruta local de archivo
@@ -71,13 +74,17 @@ PADDLEX_URL = os.getenv("PADDLEX_URL", "http://paddlex:8080")
 PADDLEX_PREDICT_PATH = os.getenv(
     "PADDLEX_PREDICT_PATH", "/vehicle-attribute-recognition"
 )
-FPS = float(os.getenv("BRIDGE_FPS", "2"))
+FPS = float(os.getenv("BRIDGE_FPS", "5"))
 FRAME_INTERVAL = 1.0 / max(FPS, 0.1)
 # Preview fluido: ritmo de lectura/push al dashboard, independiente de la
-# inferencia. Los recuadros se reutilizan del último ciclo PaddleX.
-PREVIEW_FPS = float(os.getenv("PREVIEW_FPS", "15"))
+# inferencia. Los recuadros se dibujan sobre el frame ACTUAL (puede haber un
+# leve atraso vs la detección; no se reinyecta el frame viejo — eso entrecorta).
+PREVIEW_FPS = float(os.getenv("PREVIEW_FPS", "20"))
 PREVIEW_INTERVAL = 1.0 / max(PREVIEW_FPS, 0.1)
-JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))
+# Ancho máx. del JPEG de preview (más chico = encode/red más fluido).
+PREVIEW_ENCODE_MAX_WIDTH = int(os.getenv("PREVIEW_ENCODE_MAX_WIDTH", "960"))
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "70"))
+JPEG_QUALITY_PREVIEW = int(os.getenv("JPEG_QUALITY_PREVIEW", "60"))
 DEMO_MODE = os.getenv("DEMO_MODE", "0") == "1"
 BACKOFF_INITIAL = float(os.getenv("BACKOFF_INITIAL", "1.0"))
 BACKOFF_MAX = float(os.getenv("BACKOFF_MAX", "30.0"))
@@ -85,9 +92,12 @@ HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "30.0"))
 IOU_THRESHOLD = float(os.getenv("TRACK_IOU_THRESHOLD", "0.3"))
 # Ancho máximo de inferencia: sobre este umbral se deriva frame_infer
 # (downscale) desde frame_hires; a la par o por debajo, pass-through sin copia.
-BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "1280"))
+BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "960"))
 # Cada N frames inferidos se emite una línea de métricas (infer_ms/fps/dets).
 BRIDGE_METRICS_EVERY = int(os.getenv("BRIDGE_METRICS_EVERY", "30"))
+# Compensa el atraso del recuadro: proyecta bbox con velocidad del track
+# hasta el instante del frame actual (máx. segundos hacia adelante).
+OVERLAY_EXTRAPOLATE_MAX_SEC = float(os.getenv("OVERLAY_EXTRAPOLATE_MAX_SEC", "0.6"))
 
 # --- OCR de patente (servicio paddlex-ocr, opcional — ver docker-compose.yml) ---
 PADDLEX_OCR_URL = os.getenv("PADDLEX_OCR_URL", "http://paddlex-ocr:8081")
@@ -216,13 +226,22 @@ def _open_capture(source: str, is_rtsp: bool = True) -> cv2.VideoCapture:
     return cap
 
 
-def _encode_jpeg(frame) -> Optional[bytes]:
-    ok, buf = cv2.imencode(
-        ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
-    )
+def _encode_jpeg(frame, quality: Optional[int] = None) -> Optional[bytes]:
+    q = JPEG_QUALITY if quality is None else quality
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), q])
     if not ok:
         return None
     return buf.tobytes()
+
+
+def _encode_preview_jpeg(frame) -> Optional[bytes]:
+    """JPEG liviano para el panel: downscale + calidad preview (fluidez)."""
+    h, w = frame.shape[:2]
+    if PREVIEW_ENCODE_MAX_WIDTH > 0 and w > PREVIEW_ENCODE_MAX_WIDTH:
+        new_w = PREVIEW_ENCODE_MAX_WIDTH
+        new_h = max(1, round(h * new_w / w))
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    return _encode_jpeg(frame, quality=JPEG_QUALITY_PREVIEW)
 
 
 def _maybe_resize_for_infer(frame_hires) -> tuple[Any, float, float]:
@@ -295,6 +314,54 @@ def _overlay_type_es(raw: Any) -> str:
     key = re.sub(r"[\u4e00-\u9fff]+", "", str(raw or "vehicle"))
     key = key.split("(")[0].strip().lower() or "vehicle"
     return _OVERLAY_LABEL_ES.get(key, key)
+
+
+def _extrapolate_detections(
+    curr: list[dict[str, Any]],
+    curr_ts: float,
+    prev: Optional[list[dict[str, Any]]],
+    prev_ts: float,
+    now: float,
+    max_ahead: float = OVERLAY_EXTRAPOLATE_MAX_SEC,
+) -> list[dict[str, Any]]:
+    """Proyecta bboxes al instante `now` usando velocidad constante por track_id.
+
+    `curr_ts` debe ser el timestamp del FOTOGRAMA inferido (no el de fin de
+    inferencia): si PaddleX tarda 0.4s, sin esto el recuadro ya nace atrasado.
+    """
+    if not curr:
+        return curr
+    dt_ahead = now - curr_ts
+    if dt_ahead <= 0.001 or not prev or curr_ts <= prev_ts:
+        return curr
+    dt_hist = curr_ts - prev_ts
+    if dt_hist < 0.02:
+        return curr
+    dt_ahead = min(float(dt_ahead), float(max_ahead))
+    prev_by = {
+        str(d.get("track_id")): d
+        for d in prev
+        if d.get("track_id") is not None and d.get("bbox")
+    }
+    out: list[dict[str, Any]] = []
+    for d in curr:
+        nd = dict(d)
+        bbox = d.get("bbox")
+        p = prev_by.get(str(d.get("track_id")))
+        pb = p.get("bbox") if p else None
+        if (
+            bbox
+            and pb
+            and len(bbox) >= 4
+            and len(pb) >= 4
+        ):
+            pred = []
+            for i in range(4):
+                v = (float(bbox[i]) - float(pb[i])) / dt_hist
+                pred.append(float(bbox[i]) + v * dt_ahead)
+            nd["bbox"] = pred
+        out.append(nd)
+    return out
 
 
 def _draw_overlay(frame, dets: list[dict[str, Any]]):
@@ -670,7 +737,7 @@ async def _run_image_source(
         await _post_json(client, ADAPTER_INGEST_URL, {"detections": detections})
 
     annotated = _draw_overlay(frame_hires, detections)
-    preview_jpeg = _encode_jpeg(annotated)
+    preview_jpeg = _encode_preview_jpeg(annotated)
     if preview_jpeg is not None:
         await _push_preview_frame(client, preview_jpeg)
     logger.info("Image source ready: %s detections=%d", path, len(detections))
@@ -745,8 +812,12 @@ async def run_loop() -> None:
                 infer_frame_count = 0
                 metrics_window_start = time.monotonic()
                 last_detections: list[dict[str, Any]] = []
+                prev_detections: list[dict[str, Any]] = []
+                curr_det_ts = 0.0
+                prev_det_ts = 0.0
                 infer_task: Optional[asyncio.Task] = None
                 infer_started_at = 0.0
+                preview_push_task: Optional[asyncio.Task] = None
 
                 while True:
                     tick_start = time.monotonic()
@@ -794,7 +865,12 @@ async def run_loop() -> None:
                             detections, _degraded = infer_task.result()
                             infer_ms = (time.monotonic() - infer_started_at) * 1000.0
                             if detections is not None:
+                                prev_detections = last_detections
+                                prev_det_ts = curr_det_ts
                                 last_detections = detections
+                                # Timestamp del FOTOGRAMA analizado, no del fin
+                                # de inferencia (compensa los ~400ms de PaddleX).
+                                curr_det_ts = infer_started_at
                                 await _post_json(
                                     client,
                                     ADAPTER_INGEST_URL,
@@ -827,17 +903,27 @@ async def run_loop() -> None:
                     if infer_task is None and (now - last_infer) >= FRAME_INTERVAL:
                         last_infer = now
                         infer_started_at = now
-                        frame_for_infer = frame_hires.copy()
                         infer_task = asyncio.create_task(
-                            _run_detections(client, frame_for_infer)
+                            _run_detections(client, frame_hires.copy())
                         )
 
-                    # Preview fluido: cada tick pinta el frame actual con
-                    # los últimos recuadros conocidos (pueden tener 1 tick de atraso).
-                    annotated = _draw_overlay(frame_hires, last_detections)
-                    preview_jpeg = _encode_jpeg(annotated)
+                    # Solo frames ACTUALES; bbox proyectado al instante actual.
+                    dets_draw = _extrapolate_detections(
+                        last_detections,
+                        curr_det_ts,
+                        prev_detections,
+                        prev_det_ts,
+                        now,
+                    )
+                    annotated = _draw_overlay(frame_hires, dets_draw)
+                    preview_jpeg = _encode_preview_jpeg(annotated)
                     if preview_jpeg is not None:
-                        await _push_preview_frame(client, preview_jpeg)
+                        # Si el push anterior sigue en vuelo, saltar este frame
+                        # en vez de acumular cola (también entrecorta).
+                        if preview_push_task is None or preview_push_task.done():
+                            preview_push_task = asyncio.create_task(
+                                _push_preview_frame(client, preview_jpeg)
+                            )
 
                     elapsed = time.monotonic() - tick_start
                     sleep_for = PREVIEW_INTERVAL - elapsed

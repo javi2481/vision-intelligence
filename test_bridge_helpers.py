@@ -15,6 +15,7 @@ from rtsp_bridge import (
     BRIDGE_MAX_WIDTH,
     SOURCE_URL,
     _draw_overlay,
+    _extrapolate_detections,
     _is_rtsp_source,
     _is_safe_media_name,
     _maybe_resize_for_infer,
@@ -36,7 +37,9 @@ class MaybeResizeForInferTests(unittest.TestCase):
         self.assertAlmostEqual(scale_y, 1080 / frame_infer.shape[0])
 
     def test_at_or_below_threshold_is_pass_through(self) -> None:
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        w = BRIDGE_MAX_WIDTH
+        h = max(1, round(720 * w / 1280))
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
         frame_infer, scale_x, scale_y = _maybe_resize_for_infer(frame)
 
         self.assertIs(frame_infer, frame)
@@ -182,6 +185,20 @@ class OverlaySpanishLabelsTests(unittest.TestCase):
         color, vtype = _parse_attr_labels(["red(红色)", "sedan(轿车)"], [0.9, 0.8])
         self.assertEqual(color, "red")
         self.assertEqual(vtype, "sedan")
+
+
+class ExtrapolateDetectionsTests(unittest.TestCase):
+    def test_projects_bbox_forward_with_constant_velocity(self) -> None:
+        prev = [{"track_id": "1", "bbox": [0.0, 0.0, 10.0, 10.0], "label": "car"}]
+        curr = [{"track_id": "1", "bbox": [10.0, 0.0, 20.0, 10.0], "label": "car"}]
+        # Velocidad +10 px/s en x; 0.5s adelante => +5
+        out = _extrapolate_detections(curr, 1.0, prev, 0.0, 1.5, max_ahead=1.0)
+        self.assertEqual(out[0]["bbox"], [15.0, 0.0, 25.0, 10.0])
+
+    def test_no_prev_returns_curr_unchanged(self) -> None:
+        curr = [{"track_id": "1", "bbox": [10.0, 0.0, 20.0, 10.0]}]
+        out = _extrapolate_detections(curr, 1.0, None, 0.0, 1.5)
+        self.assertEqual(out[0]["bbox"], [10.0, 0.0, 20.0, 10.0])
 
 
 if __name__ == "__main__":
