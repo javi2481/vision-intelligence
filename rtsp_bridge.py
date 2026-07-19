@@ -38,9 +38,35 @@ logging.basicConfig(
 logger = logging.getLogger("rtsp_bridge")
 
 RTSP_URL = os.getenv("RTSP_URL", "rtsp://mediamtx:8554/webcam")
+# SOURCE_URL generaliza el origen: RTSP (rtsp://...) o ruta local de archivo
+# bajo MEDIA_DIR. Sin setear, cae a RTSP_URL (compat total con el default
+# previo — BCS-1).
+SOURCE_URL = os.getenv("SOURCE_URL") or RTSP_URL
 ADAPTER_INGEST_URL = os.getenv(
     "ADAPTER_INGEST_URL", "http://adapter:8000/ingest"
 )
+ADAPTER_MEDIA_CURRENT_URL = os.getenv(
+    "ADAPTER_MEDIA_CURRENT_URL", "http://adapter:8000/media/current"
+)
+ADAPTER_PREVIEW_FRAME_URL = os.getenv(
+    "ADAPTER_PREVIEW_FRAME_URL", "http://adapter:8000/preview/frame"
+)
+# Selector de muestra local (overlay-preview): mismo layout que adapter.py.
+MEDIA_DIR = os.getenv("MEDIA_DIR", "/media")
+MEDIA_VIDEO_SUBDIR = "videos"
+MEDIA_IMAGE_SUBDIR = "images"
+MEDIA_POLL_INTERVAL = float(os.getenv("MEDIA_POLL_INTERVAL", "1.0"))
+MEDIA_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
+MEDIA_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+# Cada cuántos segundos se re-empuja el mismo frame anotado en modo foto
+# (single-shot) para mantener /preview.mjpg "vivo" en el adaptador (D5).
+PREVIEW_IMAGE_HEARTBEAT_SECONDS = float(
+    os.getenv("PREVIEW_IMAGE_HEARTBEAT_SECONDS", "5.0")
+)
+# Overlay (FO-1): color BGR y fuente del bbox+label dibujado sobre frame_hires.
+OVERLAY_BOX_COLOR = (0, 255, 0)
+OVERLAY_FONT = cv2.FONT_HERSHEY_SIMPLEX
+OVERLAY_FONT_SCALE = 0.5
 PADDLEX_URL = os.getenv("PADDLEX_URL", "http://paddlex:8080")
 PADDLEX_PREDICT_PATH = os.getenv(
     "PADDLEX_PREDICT_PATH", "/vehicle-attribute-recognition"
@@ -56,7 +82,7 @@ IOU_THRESHOLD = float(os.getenv("TRACK_IOU_THRESHOLD", "0.3"))
 # Ancho máximo de inferencia: sobre este umbral se deriva frame_infer
 # (downscale) desde frame_hires; a la par o por debajo, pass-through sin copia.
 BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "1280"))
-# Cada N frames inferidos se emite una línea de métricas (infer_ms/encode_ms/fps).
+# Cada N frames inferidos se emite una línea de métricas (infer_ms/fps/dets).
 BRIDGE_METRICS_EVERY = int(os.getenv("BRIDGE_METRICS_EVERY", "30"))
 
 # --- OCR de patente (servicio paddlex-ocr, opcional — ver docker-compose.yml) ---
@@ -128,9 +154,60 @@ class IoUTracker:
 _tracker = IoUTracker(IOU_THRESHOLD)
 
 
-def _open_capture(url: str) -> cv2.VideoCapture:
-    os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+def _is_rtsp_source(source: str) -> bool:
+    """True si `source` es una URL RTSP; False si es una ruta de archivo local (BCS-1)."""
+    return source.strip().lower().startswith("rtsp://")
+
+
+def _media_type_by_extension(filename: str) -> Optional[str]:
+    """Clasifica `filename` en 'video'/'image' por extensión; None si no matchea."""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in MEDIA_VIDEO_EXTENSIONS:
+        return "video"
+    if ext in MEDIA_IMAGE_EXTENSIONS:
+        return "image"
+    return None
+
+
+def _is_safe_media_name(name: str) -> bool:
+    """Allow-list guard local: `name` debe ser un basename plano (sin traversal)."""
+    return bool(name) and os.path.basename(name) == name and name not in (".", "..")
+
+
+def _resolve_media_path(name: str, media_type: str) -> Optional[str]:
+    """Construye la ruta absoluta bajo MEDIA_DIR para una muestra ya validada
+    por el adapter. Vuelve a chequear traversal (defensa en profundidad)."""
+    if not _is_safe_media_name(name):
+        return None
+    subdir = MEDIA_VIDEO_SUBDIR if media_type == "video" else MEDIA_IMAGE_SUBDIR
+    return os.path.join(MEDIA_DIR, subdir, name)
+
+
+def _resolve_active_source(
+    selected: Optional[dict[str, Any]],
+) -> tuple[str, bool, bool]:
+    """Decide la fuente activa: `(source, is_rtsp, is_image)`.
+
+    Si hay una muestra seleccionada (vía /media/select en el adapter), resuelve
+    su ruta local bajo MEDIA_DIR. Si no, cae a SOURCE_URL (RTSP o archivo local
+    directo) — comportamiento previo preservado cuando no hay selección.
+    """
+    if selected and selected.get("name"):
+        media_type = selected.get("type") or "video"
+        path = _resolve_media_path(selected["name"], media_type)
+        if path is not None:
+            return path, False, media_type == "image"
+    is_rtsp = _is_rtsp_source(SOURCE_URL)
+    is_image = (not is_rtsp) and _media_type_by_extension(SOURCE_URL) == "image"
+    return SOURCE_URL, is_rtsp, is_image
+
+
+def _open_capture(source: str, is_rtsp: bool = True) -> cv2.VideoCapture:
+    if is_rtsp:
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+    else:
+        cap = cv2.VideoCapture(source)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     return cap
 
@@ -194,6 +271,71 @@ def _crop_bbox(frame, bbox: list[float]) -> Optional[Any]:
     return frame[y1:y2, x1:x2]
 
 
+# Etiquetas visibles en overlay (español). Claves = valores crudos del modelo.
+_OVERLAY_LABEL_ES = {
+    "vehicle": "vehiculo",
+    "car": "auto",
+    "sedan": "sedan",
+    "suv": "SUV",
+    "van": "furgoneta",
+    "truck": "camion",
+    "bus": "colectivo",
+    "mpv": "monovolumen",
+    "pickup": "pickup",
+    "unknown": "desconocido",
+}
+
+
+def _overlay_type_es(raw: Any) -> str:
+    """Tipo para dibujar en el frame: español ASCII (OpenCV putText no rinde bien tildes)."""
+    key = re.sub(r"[\u4e00-\u9fff]+", "", str(raw or "vehicle"))
+    key = key.split("(")[0].strip().lower() or "vehicle"
+    return _OVERLAY_LABEL_ES.get(key, key)
+
+
+def _draw_overlay(frame, dets: list[dict[str, Any]]):
+    """Dibuja bbox+label (tipo/patente/confianza) por detección sobre una copia
+    de `frame` (FO-1). Sin detecciones, devuelve `frame` sin tocar (no-op)."""
+    if not dets:
+        return frame
+
+    annotated = frame.copy()
+    h, w = annotated.shape[:2]
+    for d in dets:
+        bbox = d.get("bbox")
+        if not bbox or len(bbox) < 4:
+            continue
+        x1 = max(0, min(int(round(bbox[0])), w))
+        y1 = max(0, min(int(round(bbox[1])), h))
+        x2 = max(0, min(int(round(bbox[2])), w))
+        y2 = max(0, min(int(round(bbox[3])), h))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        plate = d.get("plate")
+        plate_text = plate.get("text") if isinstance(plate, dict) else None
+        label = _overlay_type_es(d.get("label"))
+        if plate_text:
+            label += f" {plate_text}"
+        label += f" {float(d.get('score') or 0.0):.2f}"
+
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), OVERLAY_BOX_COLOR, 2)
+        (tw, th), _ = cv2.getTextSize(label, OVERLAY_FONT, OVERLAY_FONT_SCALE, 1)
+        ty1 = max(0, y1 - th - 6)
+        cv2.rectangle(annotated, (x1, ty1), (x1 + tw + 4, ty1 + th + 6), OVERLAY_BOX_COLOR, -1)
+        cv2.putText(
+            annotated,
+            label,
+            (x1 + 2, ty1 + th + 2),
+            OVERLAY_FONT,
+            OVERLAY_FONT_SCALE,
+            (0, 0, 0),
+            1,
+            cv2.LINE_AA,
+        )
+    return annotated
+
+
 def _parse_plate(
     rec_texts: list[Any], rec_scores: list[Any]
 ) -> Optional[dict[str, Any]]:
@@ -214,7 +356,11 @@ def _parse_plate(
 
 
 def _parse_attr_labels(labels: list[Any], scores: list[Any]) -> tuple[Optional[str], Optional[str]]:
-    """Extrae color y vehicle_type de labels tipo 'red(红色)', 'sedan(轿车)'."""
+    """Extrae color y vehicle_type de labels tipo 'red(红色)', 'sedan(轿车)'.
+
+    Solo conserva la parte latina antes del paréntesis; descarta CJK residual
+    para que color/tipo no lleguen en chino al front.
+    """
     color, vtype = None, None
     color_keys = {
         "red", "blue", "green", "yellow", "white", "black", "brown",
@@ -225,12 +371,15 @@ def _parse_attr_labels(labels: list[Any], scores: list[Any]) -> tuple[Optional[s
     }
     for label, score in zip(labels or [], scores or []):
         raw = str(label).split("(")[0].strip().lower()
+        raw = re.sub(r"[\u4e00-\u9fff]+", "", raw).strip()
+        if not raw:
+            continue
         if raw in color_keys and color is None:
             color = raw
         elif raw in type_keys and vtype is None:
             vtype = raw
-        elif color is None and raw not in type_keys:
-            # primer atributo no-tipo → color candidato
+        elif color is None and raw not in type_keys and re.fullmatch(r"[a-z_\-]+", raw):
+            # primer atributo latino no-tipo → color candidato (nunca CJK)
             color = raw
     return color, vtype
 
@@ -419,12 +568,130 @@ async def _notify_degraded(client: httpx.AsyncClient) -> None:
     await _post_json(client, ADAPTER_INGEST_URL, {"degraded": True})
 
 
+async def _fetch_current_media(client: httpx.AsyncClient) -> Optional[dict[str, Any]]:
+    """GET /media/current en el adapter. None ante cualquier falla (D3: se
+    mantiene la selección activa en silencio, sin backoff-reconnect)."""
+    try:
+        resp = await client.get(ADAPTER_MEDIA_CURRENT_URL, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.debug("Media poll failed (kept active source): %s", exc)
+        return None
+
+    if not isinstance(data, dict) or not data.get("name"):
+        return None
+    return {
+        "name": data["name"],
+        "type": data.get("type") or "video",
+        "generation": data.get("generation"),
+    }
+
+
+async def _push_preview_frame(client: httpx.AsyncClient, jpeg: bytes) -> None:
+    """POST del JPEG anotado al adapter (D1). Aislado: falla en silencio, sin
+    afectar el output /ingest (LMP-4, dual output)."""
+    try:
+        resp = await client.post(
+            ADAPTER_PREVIEW_FRAME_URL,
+            content=jpeg,
+            headers={"Content-Type": "image/jpeg"},
+            timeout=HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        logger.debug("Preview push failed: %s", exc)
+
+
+async def _run_detections(
+    client: httpx.AsyncClient, frame_hires
+) -> tuple[Optional[list[dict[str, Any]]], bool]:
+    """Infiere+OCR sobre un frame ya capturado. Devuelve (detections, degraded).
+
+    `detections is None` señala "saltar este frame" (falla de encode o
+    PaddleX degradado) — distinto de `[]` (inferencia OK, cero detecciones).
+    Compartido entre el loop de video y el modo foto single-shot: mismo
+    pipeline resize -> encode -> PaddleX -> scale -> OCR opcional.
+    """
+    frame_infer, scale_x, scale_y = _maybe_resize_for_infer(frame_hires)
+    jpeg = _encode_jpeg(frame_infer)
+    if jpeg is None:
+        return None, False
+
+    detections = await _infer_paddlex(client, jpeg)
+    if detections is None:
+        await _notify_degraded(client)
+        return None, True
+
+    _scale_detections(detections, scale_x, scale_y)
+
+    # === OCR de patente (opcional, D1: bbox ya en coords frame_hires tras
+    # _scale_detections — sin 1/scale extra) ===
+    if ENABLE_PLATE_OCR and detections:
+        eligible = sorted(
+            (d for d in detections if d.get("score", 0.0) > OCR_MIN_SCORE),
+            key=lambda d: d["score"],
+            reverse=True,
+        )[:OCR_TOPK]
+        for d in eligible:
+            crop = _crop_bbox(frame_hires, d["bbox"])
+            if crop is None:
+                continue
+            crop_jpeg = _encode_jpeg(crop)
+            if crop_jpeg is None:
+                continue
+            plate = await _infer_ocr(client, crop_jpeg)
+            if plate:
+                d["plate"] = plate
+    # ============================================================
+
+    return detections, False
+
+
+async def _run_image_source(
+    client: httpx.AsyncClient, path: str, selected_name: Optional[str]
+) -> None:
+    """Fuente foto (single-shot, D5): imread+infer+overlay una vez, luego
+    idle re-empujando el mismo frame anotado + polleando hot-swap.
+
+    Retorna cuando la selección activa cambia (para que run_loop reabra).
+    """
+    frame_hires = cv2.imread(path)
+    if frame_hires is None:
+        raise RuntimeError(f"Cannot read image source: {path}")
+
+    detections, _degraded = await _run_detections(client, frame_hires)
+    detections = detections or []
+    if detections:
+        await _post_json(client, ADAPTER_INGEST_URL, {"detections": detections})
+
+    annotated = _draw_overlay(frame_hires, detections)
+    preview_jpeg = _encode_jpeg(annotated)
+    if preview_jpeg is not None:
+        await _push_preview_frame(client, preview_jpeg)
+    logger.info("Image source ready: %s detections=%d", path, len(detections))
+
+    last_heartbeat = time.monotonic()
+    while True:
+        await asyncio.sleep(MEDIA_POLL_INTERVAL)
+        polled = await _fetch_current_media(client)
+        if polled is not None and polled.get("name") != selected_name:
+            logger.info("Media selection changed away from image -> %s", polled)
+            return
+
+        now = time.monotonic()
+        if preview_jpeg is not None and now - last_heartbeat >= PREVIEW_IMAGE_HEARTBEAT_SECONDS:
+            await _push_preview_frame(client, preview_jpeg)
+            last_heartbeat = now
+
+
 async def run_loop() -> None:
     backoff = BACKOFF_INITIAL
     logger.info(
-        "Bridge start rtsp=%s paddlex=%s%s adapter=%s demo=%s fps=%.1f "
-        "ocr_enabled=%s ocr_url=%s",
-        RTSP_URL,
+        "Bridge start source=%s media_dir=%s paddlex=%s%s adapter=%s demo=%s "
+        "fps=%.1f ocr_enabled=%s ocr_url=%s",
+        SOURCE_URL,
+        MEDIA_DIR,
         PADDLEX_URL,
         PADDLEX_PREDICT_PATH,
         ADAPTER_INGEST_URL,
@@ -433,6 +700,8 @@ async def run_loop() -> None:
         ENABLE_PLATE_OCR,
         PADDLEX_OCR_URL if ENABLE_PLATE_OCR else "-",
     )
+
+    selected: Optional[dict[str, Any]] = None
 
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         while True:
@@ -447,21 +716,64 @@ async def run_loop() -> None:
                     backoff = BACKOFF_INITIAL
                     continue
 
-                cap = _open_capture(RTSP_URL)
-                if not cap.isOpened():
-                    raise RuntimeError(f"Cannot open RTSP: {RTSP_URL}")
+                # Poll de selección de muestra antes de (re)abrir la fuente (LMP-2, D3).
+                polled = await _fetch_current_media(client)
+                if polled is not None:
+                    selected = polled
+                source, is_rtsp, is_image = _resolve_active_source(selected)
 
-                logger.info("RTSP connected: %s", RTSP_URL)
+                if is_image:
+                    await _run_image_source(
+                        client, source, selected.get("name") if selected else None
+                    )
+                    backoff = BACKOFF_INITIAL
+                    continue
+
+                cap = _open_capture(source, is_rtsp)
+                if not cap.isOpened():
+                    raise RuntimeError(f"Cannot open source: {source}")
+
+                logger.info("Source connected: %s (rtsp=%s)", source, is_rtsp)
                 backoff = BACKOFF_INITIAL
                 last_sent = 0.0
+                last_media_poll = time.monotonic()
                 infer_frame_count = 0
-                ocr_frame_idx = 0
                 metrics_window_start = time.monotonic()
 
                 while True:
+                    now_poll = time.monotonic()
+                    if now_poll - last_media_poll >= MEDIA_POLL_INTERVAL:
+                        last_media_poll = now_poll
+                        polled = await _fetch_current_media(client)
+                        active_name = selected.get("name") if selected else None
+                        if polled is not None and polled.get("name") != active_name:
+                            logger.info("Media selection changed -> %s", polled)
+                            selected = polled
+                            break  # reabrir con la nueva fuente en la vuelta externa
+
                     ok, frame_hires = cap.read()
                     if not ok or frame_hires is None:
-                        raise RuntimeError("RTSP read failed")
+                        if is_rtsp:
+                            raise RuntimeError("RTSP read failed")
+                        # EOF en archivo local: rewind, NO backoff-reconnect (BCS-2).
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ok, frame_hires = cap.read()
+                        if not ok or frame_hires is None:
+                            try:
+                                cap.release()
+                            except Exception:
+                                pass
+                            cap = _open_capture(source, is_rtsp)
+                            if not cap.isOpened():
+                                raise RuntimeError(
+                                    f"Cannot reopen local source after EOF: {source}"
+                                )
+                            ok, frame_hires = cap.read()
+                            if not ok or frame_hires is None:
+                                raise RuntimeError(
+                                    f"Local source unreadable after reopen: {source}"
+                                )
+                        logger.debug("Local source EOF -> rewound: %s", source)
 
                     now = time.monotonic()
                     if now - last_sent < FRAME_INTERVAL:
@@ -469,57 +781,22 @@ async def run_loop() -> None:
                         continue
                     last_sent = now
 
-                    frame_infer, scale_x, scale_y = _maybe_resize_for_infer(
-                        frame_hires
-                    )
-                    resized = not (scale_x == 1.0 and scale_y == 1.0)
-
-                    encode_start = time.monotonic()
-                    jpeg = _encode_jpeg(frame_infer)
-                    encode_ms = (time.monotonic() - encode_start) * 1000.0
-                    if jpeg is None:
-                        continue
-
                     infer_start = time.monotonic()
-                    detections = await _infer_paddlex(client, jpeg)
+                    detections, _degraded = await _run_detections(client, frame_hires)
                     infer_ms = (time.monotonic() - infer_start) * 1000.0
                     if detections is None:
-                        await _notify_degraded(client)
                         continue
-
-                    _scale_detections(detections, scale_x, scale_y)
-
-                    # === OCR de patente (opcional, D1: bbox ya en coords
-                    # frame_hires tras _scale_detections — sin 1/scale extra) ===
-                    if ENABLE_PLATE_OCR:
-                        ocr_frame_idx += 1
-                        if ocr_frame_idx % OCR_EVERY_N_FRAMES == 0:
-                            eligible = sorted(
-                                (
-                                    d
-                                    for d in detections
-                                    if d.get("score", 0.0) > OCR_MIN_SCORE
-                                ),
-                                key=lambda d: d["score"],
-                                reverse=True,
-                            )[:OCR_TOPK]
-                            for d in eligible:
-                                crop = _crop_bbox(frame_hires, d["bbox"])
-                                if crop is None:
-                                    continue
-                                crop_jpeg = _encode_jpeg(crop)
-                                if crop_jpeg is None:
-                                    continue
-                                plate = await _infer_ocr(client, crop_jpeg)
-                                if plate:
-                                    d["plate"] = plate
-                    # ============================================================
 
                     await _post_json(
                         client,
                         ADAPTER_INGEST_URL,
                         {"detections": detections},
                     )
+
+                    annotated = _draw_overlay(frame_hires, detections)
+                    preview_jpeg = _encode_jpeg(annotated)
+                    if preview_jpeg is not None:
+                        await _push_preview_frame(client, preview_jpeg)
 
                     infer_frame_count += 1
                     if infer_frame_count % BRIDGE_METRICS_EVERY == 0:
@@ -528,13 +805,10 @@ async def run_loop() -> None:
                             BRIDGE_METRICS_EVERY / window_s if window_s > 0 else 0.0
                         )
                         logger.info(
-                            "metrics infer_ms=%.1f encode_ms=%.1f "
-                            "effective_fps=%.2f resized=%s infer_w=%d",
+                            "metrics infer_ms=%.1f effective_fps=%.2f dets=%d",
                             infer_ms,
-                            encode_ms,
                             effective_fps,
-                            resized,
-                            frame_infer.shape[1],
+                            len(detections),
                         )
                         metrics_window_start = time.monotonic()
 

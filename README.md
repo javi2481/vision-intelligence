@@ -66,6 +66,50 @@ En `rtsp_bridge.py`, después de `_scale_detections(...)` (bbox ya en coords `fr
 
 **Limitación**: el pipeline `OCR` de PaddleX es un OCR genérico (no un modelo de reconocimiento de patentes dedicado). La regex de 5-8 alfanuméricos filtra ruido, pero puede producir falsos positivos/negativos con placas fuera de ese formato o con texto ambiguo en la escena (carteles, logos). Para producción se recomienda evaluar un modelo/pipeline específico de patentes.
 
+## Selector de muestra local + preview anotado (overlay-preview)
+
+Además de RTSP en vivo, el stack puede correr contra un video o foto de muestra
+local, con overlay de bbox+patente dibujado por el bridge y expuesto como
+preview en el dashboard — sin FFmpeg/MediaMTX en el camino, sin tocar
+`epp_core.py`, sin React ni webcam del usuario (EPP Punto 12).
+
+**Flujo**: AMIS (`select`) → `POST /media/select` (adapter valida contra el
+allow-list real de `videos_muestra/`/`imagenes_muestra/`) → el bridge polea
+`GET /media/current` y reabre su `cv2.VideoCapture` en caliente (sin reiniciar
+el contenedor) → dibuja bbox+label sobre `frame_hires` → empuja el JPEG
+anotado a `POST /preview/frame` → el dashboard lo muestra vía `/preview.mjpg`
+(video) o `/preview.jpg` (foto). `POST /ingest` sigue igual: `/events` no se
+ve afectado (dual output).
+
+### Variables de entorno
+
+| Variable | Default | Propósito |
+|----------|---------|-----------|
+| `MEDIA_DIR` | `/media` | Punto de montaje RO común (adapter+bridge): `{MEDIA_DIR}/videos` ← `./videos_muestra`, `{MEDIA_DIR}/images` ← `./imagenes_muestra`. |
+| `MEDIA_POLL_INTERVAL` | `1.0` | Segundos entre polls del bridge a `GET /media/current` para detectar hot-swap. |
+| `SOURCE_URL` | (vacío → `RTSP_URL`) | Generaliza el origen del bridge: URL RTSP o ruta local de archivo. Solo aplica mientras no haya una muestra seleccionada. |
+| `ADAPTER_MEDIA_CURRENT_URL` | `http://adapter:8000/media/current` | URL que el bridge polea para hot-swap. |
+| `ADAPTER_PREVIEW_FRAME_URL` | `http://adapter:8000/preview/frame` | URL donde el bridge empuja el JPEG anotado. |
+| `PREVIEW_MJPEG_INTERVAL` | `0.2` | (adapter) Intervalo de re-emisión de `/preview.mjpg`. |
+
+### Endpoints nuevos (adapter)
+
+| Endpoint | Descripción |
+|----------|-------------|
+| `GET /media/list` | `{items:[{name,type}]}` — allow-list real (archivos físicamente presentes, no recursivo). |
+| `GET /media/current` | `{name,type,generation}` — fuente activa. |
+| `POST /media/select {name}` | Selecciona una muestra allow-listed; `400` si `name` no está en la lista (path traversal incluido); no cambia la fuente activa. |
+| `POST /preview/frame` | (uso interno del bridge) Body `image/jpeg` crudo → guarda el último frame anotado. |
+| `GET /preview.mjpg` | Stream `multipart/x-mixed-replace` del preview anotado (video). |
+| `GET /preview.jpg` | Único JPEG anotado más reciente (foto); `503` si aún no hay frame. |
+
+### Escenarios de smoke manual (ejecutar tras `docker compose up --build`)
+
+1. **Boxes alineados en `Brasil6.mp4`**: en el dashboard, seleccionar `Brasil6.mp4` en "Fuente local (muestras)"; el preview debe mostrar rectángulos+etiqueta alineados sobre los vehículos detectados.
+2. **Foto sirve un solo frame anotado**: seleccionar una muestra de imagen (`imagenes_muestra/sample_*.jpg`); `/preview.jpg` debe devolver un único JPEG anotado (o el frame se mantiene fijo en `/preview.mjpg` si el navegador cae al fallback `onerror`).
+3. **`/events` sigue poblándose durante el preview**: con una muestra de video seleccionada, la tabla de eventos y las 4 tarjetas KPI deben seguir actualizándose exactamente igual que antes de este cambio.
+4. **Selección fuera del allow-list se rechaza**: `curl -X POST http://localhost:8000/media/select -H "Content-Type: application/json" -d "{\"name\":\"../etc/passwd\"}"` debe responder `400` y `GET /media/current` debe seguir mostrando la fuente previa sin cambios.
+
 ### Frame de alta resolución vs. frame de inferencia
 
 Cada frame capturado (`frame_hires`) se mantiene sin modificar en todo momento (reservado para overlay/OCR futuro). Solo si `frame_hires` supera `BRIDGE_MAX_WIDTH` de ancho se deriva un `frame_infer` reducido (`cv2.resize` + `INTER_AREA`) exclusivamente para JPEG-encode e inferencia PaddleX; si el ancho está dentro del límite, `frame_infer` es el mismo frame (sin copia, sin costo extra). Las detecciones que devuelve PaddleX vienen en coordenadas de `frame_infer`, y el bridge las reescala de vuelta a coordenadas de `frame_hires` (bbox nativo) antes de enviarlas al adaptador — el contrato `epp_core.py` y el adaptador no ven ninguna diferencia.
@@ -74,7 +118,7 @@ Cada frame capturado (`frame_hires`) se mantiene sin modificar en todo momento (
 
 Dos formas de medir el impacto de estos ajustes:
 
-- **Log en proceso**: cada `BRIDGE_METRICS_EVERY` frames inferidos, el bridge emite una línea `metrics infer_ms=... encode_ms=... effective_fps=... resized=... infer_w=...` con la duración de inferencia/encode del último frame de la ventana y el FPS efectivo promedio de la ventana.
+- **Log en proceso**: cada `BRIDGE_METRICS_EVERY` frames inferidos, el bridge emite una línea `metrics infer_ms=... effective_fps=... dets=...` con la duración de inferencia del último frame de la ventana, el FPS efectivo promedio de la ventana y la cantidad de detecciones de ese frame.
 - **`docker stats` (externo, sin cambios de código)**:
 
   ```bash
@@ -217,6 +261,7 @@ El sweeper del adaptador emite al expirar el TTL del track (default 10 s) o si l
 | `Dockerfile.*` | Imágenes adapter / bridge / paddlex |
 | `inject_webcam.*` | Publicación RTSP desde el host |
 | `webrtc_config.md` | WebRTC opcional |
+| `videos_muestra/`, `imagenes_muestra/` | Muestras locales para el selector (gitignored, RO en compose) |
 
 ## Troubleshooting
 

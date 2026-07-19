@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -46,6 +46,19 @@ JETLINKS_API_KEY = os.getenv("JETLINKS_API_KEY", "demo")
 STATIC_DIR = os.getenv("STATIC_DIR", os.path.dirname(os.path.abspath(__file__)))
 RULES_SINK_URL = os.getenv("RULES_SINK_URL", "http://rules-sink:8850")
 
+# --- Selector de muestra local + preview anotado (overlay-preview) ---
+# MEDIA_DIR contiene dos subcarpetas (montadas RO en docker-compose):
+#   {MEDIA_DIR}/videos  <- ./videos_muestra
+#   {MEDIA_DIR}/images  <- ./imagenes_muestra
+# El allow-list es SIEMPRE lo que existe físicamente ahí; nunca se acepta
+# una ruta arbitraria del cliente (ver `_find_media_path`).
+MEDIA_DIR = os.getenv("MEDIA_DIR", "/media")
+MEDIA_VIDEO_SUBDIR = "videos"
+MEDIA_IMAGE_SUBDIR = "images"
+MEDIA_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
+MEDIA_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+PREVIEW_MJPEG_INTERVAL = float(os.getenv("PREVIEW_MJPEG_INTERVAL", "0.2"))
+
 
 class TrackBucket(BaseModel):
     """Caché en memoria de un track: detecciones + metadatos de TTL."""
@@ -59,6 +72,56 @@ class TrackBucket(BaseModel):
 track_cache: dict[str, TrackBucket] = {}
 events_buffer: deque[dict[str, Any]] = deque(maxlen=EVENTS_BUFFER_SIZE)
 _stats = {"ingested": 0, "emitted": 0, "paddlex_degraded": False}
+
+# Estado de la muestra activa + último frame anotado (preview overlay-preview).
+_current_media: Optional[dict[str, str]] = None
+_generation: int = 0
+_latest_frame: Optional[bytes] = None
+_frame_lock = asyncio.Lock()
+
+
+def _list_media_items() -> list[dict[str, str]]:
+    """Enumera archivos reales (no recursivo) en {MEDIA_DIR}/videos y /images.
+
+    Este es EL allow-list: nunca se acepta un nombre que no aparezca acá.
+    No recorre subcarpetas (evita enumerar datasets anidados enormes).
+    """
+    items: list[dict[str, str]] = []
+    groups = (
+        (MEDIA_VIDEO_SUBDIR, "video", MEDIA_VIDEO_EXTENSIONS),
+        (MEDIA_IMAGE_SUBDIR, "image", MEDIA_IMAGE_EXTENSIONS),
+    )
+    for subdir, media_type, extensions in groups:
+        folder = os.path.join(MEDIA_DIR, subdir)
+        if not os.path.isdir(folder):
+            continue
+        for entry in sorted(os.listdir(folder)):
+            full_path = os.path.join(folder, entry)
+            if not os.path.isfile(full_path):
+                continue
+            if os.path.splitext(entry)[1].lower() not in extensions:
+                continue
+            items.append({"name": entry, "type": media_type})
+    return items
+
+
+def _find_media_path(name: str) -> Optional[tuple[str, str]]:
+    """Resuelve `name` contra el allow-list. None si no matchea exactamente.
+
+    Bloquea path traversal: solo se acepta un basename tal cual aparece en
+    `_list_media_items()` (mismo nombre físico presente en MEDIA_DIR).
+    """
+    if not name or os.path.basename(name) != name:
+        return None
+    for item in _list_media_items():
+        if item["name"] == name:
+            subdir = MEDIA_VIDEO_SUBDIR if item["type"] == "video" else MEDIA_IMAGE_SUBDIR
+            return os.path.join(MEDIA_DIR, subdir, name), item["type"]
+    return None
+
+
+class MediaSelectBody(BaseModel):
+    name: str
 
 
 class IngestBody(BaseModel):
@@ -355,6 +418,97 @@ async def webhook_rules(request: Request) -> JSONResponse:
 
     await _forward_to_jetlinks(parsed)
     return JSONResponse({"ok": True, "processed": len(parsed)})
+
+
+@app.get("/media/list")
+async def media_list() -> dict[str, Any]:
+    """Lista de muestras allow-listed disponibles (LMP-1)."""
+    return {"items": _list_media_items()}
+
+
+@app.get("/media/current")
+async def media_current() -> dict[str, Any]:
+    """Fuente activa actual + token de generación (LMP-2)."""
+    if _current_media is None:
+        return {"name": None, "type": None, "generation": _generation}
+    return {
+        "name": _current_media["name"],
+        "type": _current_media["type"],
+        "generation": _generation,
+    }
+
+
+@app.post("/media/select")
+async def media_select(body: MediaSelectBody) -> JSONResponse:
+    """Selecciona una muestra allow-listed; rechaza cualquier otra (LMP-1, LMP-2)."""
+    global _current_media, _generation
+
+    resolved = _find_media_path(body.name)
+    if resolved is None:
+        return JSONResponse(
+            {"ok": False, "error": "name not allow-listed"}, status_code=400
+        )
+
+    _, media_type = resolved
+    _current_media = {"name": body.name, "type": media_type}
+    _generation += 1
+    logger.info("Media selected: %s (type=%s, gen=%d)", body.name, media_type, _generation)
+    return JSONResponse({"ok": True, "name": body.name, "generation": _generation})
+
+
+@app.post("/preview/frame")
+async def preview_frame(request: Request) -> JSONResponse:
+    """Recibe el JPEG anotado del bridge y lo guarda como último frame (D1)."""
+    global _latest_frame
+
+    body = await request.body()
+    if not body:
+        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
+
+    async with _frame_lock:
+        _latest_frame = body
+    return JSONResponse({"ok": True})
+
+
+async def _mjpeg_frames(request: Request):
+    """Generador multipart/x-mixed-replace: reemite el último frame disponible."""
+    boundary = b"--frame"
+    while True:
+        if await request.is_disconnected():
+            break
+        async with _frame_lock:
+            frame = _latest_frame
+        if frame is None:
+            await asyncio.sleep(PREVIEW_MJPEG_INTERVAL)
+            continue
+        yield (
+            boundary
+            + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
+            + str(len(frame)).encode("ascii")
+            + b"\r\n\r\n"
+            + frame
+            + b"\r\n"
+        )
+        await asyncio.sleep(PREVIEW_MJPEG_INTERVAL)
+
+
+@app.get("/preview.mjpg")
+async def preview_mjpg(request: Request) -> StreamingResponse:
+    """Stream MJPEG del preview anotado, para video (LMP-3, D2)."""
+    return StreamingResponse(
+        _mjpeg_frames(request),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/preview.jpg")
+async def preview_jpg() -> Response:
+    """Único frame anotado más reciente, para foto (LMP-3)."""
+    async with _frame_lock:
+        frame = _latest_frame
+    if frame is None:
+        return Response(status_code=503, content=b"", media_type="image/jpeg")
+    return Response(content=frame, media_type="image/jpeg")
 
 
 @app.get("/")

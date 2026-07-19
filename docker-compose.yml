@@ -145,12 +145,17 @@ services:
       - JETLINKS_WEBHOOK_URL=${JETLINKS_WEBHOOK_URL:-}
       - JETLINKS_API_KEY=${JETLINKS_API_KEY:-demo}
       - STATIC_DIR=/app
+      - MEDIA_DIR=${MEDIA_DIR:-/media}
+      - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
     volumes:
       # Hot-reload en desarrollo
       - ./epp_core.py:/app/epp_core.py
       - ./adapter.py:/app/adapter.py
       - ./amis_dashboard.json:/app/amis_dashboard.json
       - ./dashboard.html:/app/dashboard.html
+      # Muestras locales (overlay-preview) — solo lectura, allow-list real.
+      - ./videos_muestra:/media/videos:ro
+      - ./imagenes_muestra:/media/images:ro
     networks:
       - epp-network
     healthcheck:
@@ -175,7 +180,14 @@ services:
         condition: service_healthy
     environment:
       - RTSP_URL=${RTSP_URL:-rtsp://mediamtx:8554/webcam}
+      # SOURCE_URL generaliza el origen (RTSP o archivo local bajo MEDIA_DIR).
+      # Vacío = cae a RTSP_URL (default previo intacto, BCS-1).
+      - SOURCE_URL=${SOURCE_URL:-}
+      - MEDIA_DIR=${MEDIA_DIR:-/media}
+      - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
       - ADAPTER_INGEST_URL=${ADAPTER_INGEST_URL:-http://adapter:8000/ingest}
+      - ADAPTER_MEDIA_CURRENT_URL=${ADAPTER_MEDIA_CURRENT_URL:-http://adapter:8000/media/current}
+      - ADAPTER_PREVIEW_FRAME_URL=${ADAPTER_PREVIEW_FRAME_URL:-http://adapter:8000/preview/frame}
       - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
       - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
       - BRIDGE_FPS=${BRIDGE_FPS:-1}
@@ -192,6 +204,10 @@ services:
       - OCR_EVERY_N_FRAMES=${OCR_EVERY_N_FRAMES:-5}
       - OCR_TOPK=${OCR_TOPK:-3}
       - OCR_HTTP_TIMEOUT=${OCR_HTTP_TIMEOUT:-5}
+    volumes:
+      # Muestras locales (overlay-preview) — mismo layout RO que adapter.
+      - ./videos_muestra:/media/videos:ro
+      - ./imagenes_muestra:/media/images:ro
     networks:
       - epp-network
     logging: *default-logging

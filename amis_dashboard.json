@@ -1,6 +1,6 @@
 {
   "type": "page",
-  "title": "Vision Intelligence — Dashboard",
+  "title": "Vision Intelligence — Panel",
   "name": "vision-dashboard",
   "toolbar": [
     {
@@ -9,7 +9,7 @@
     },
     {
       "type": "button",
-      "label": "Ver stream (HLS)",
+      "label": "Ver transmisión (HLS)",
       "level": "link",
       "actionType": "url",
       "url": "${hlsUrl}",
@@ -17,6 +17,61 @@
     }
   ],
   "body": [
+    {
+      "type": "panel",
+      "title": "Fuente local (muestras)",
+      "body": [
+        {
+          "type": "form",
+          "name": "mediaSelectForm",
+          "wrapWithPanel": false,
+          "api": {
+            "method": "post",
+            "url": "/media/select",
+            "adaptor": "return { status: (payload && payload.ok) ? 0 : 1, msg: (payload && payload.error) || '', data: payload };"
+          },
+          "body": [
+            {
+              "type": "select",
+              "name": "name",
+              "label": "Muestra activa",
+              "clearable": false,
+              "submitOnChange": true,
+              "source": {
+                "method": "get",
+                "url": "/media/list",
+                "adaptor": "var map={video:'video',image:'imagen'}; var items=(payload&&payload.items)||[]; return { status:0, data:{ options: items.map(function(i){ return { label: i.name+' ('+(map[i.type]||i.type)+')', value:i.name }; }) } };"
+              }
+            }
+          ]
+        },
+        {
+          "type": "service",
+          "name": "mediaCurrentService",
+          "api": {
+            "method": "get",
+            "url": "/media/current",
+            "adaptor": "var map={video:'video',image:'imagen'}; var t=payload&&payload.type; return { status:0, data:{ name:payload&&payload.name, type: map[t]||t||'—', generation:payload&&payload.generation } };"
+          },
+          "interval": 2000,
+          "body": {
+            "type": "tpl",
+            "tpl": "<span>Fuente activa: <strong>${name|default:\"(ninguna seleccionada)\"}</strong> — tipo: <span class='label label-default'>${type|default:\"—\"}</span> — generación: ${generation|default:0}</span>"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "tpl",
+          "className": "text-center",
+          "tpl": "<img src=\"/preview.mjpg\" style=\"max-width:100%;max-height:480px;border:1px solid #ddd;background:#000;\" onerror=\"this.onerror=null;this.src='/preview.jpg?ts='+Date.now();\" alt=\"Vista previa anotada\" />"
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
     {
       "type": "service",
       "name": "eventsService",
@@ -46,7 +101,7 @@
               "md": 2,
               "body": {
                 "type": "card",
-                "header": { "title": "En buffer" },
+                "header": { "title": "En cola" },
                 "body": {
                   "type": "tpl",
                   "className": "text-xl font-bold",
@@ -58,7 +113,7 @@
               "md": 2,
               "body": {
                 "type": "card",
-                "header": { "title": "Tracks activos" },
+                "header": { "title": "Seguimientos activos" },
                 "body": {
                   "type": "tpl",
                   "className": "text-xl font-bold",
@@ -73,7 +128,7 @@
                 "header": { "title": "Estado PaddleX" },
                 "body": {
                   "type": "tpl",
-                  "tpl": "${degraded ? \"<span class='label label-warning'>DEGRADADO</span>\" : \"<span class='label label-success'>OK</span>\"}"
+                  "tpl": "${degraded ? \"<span class='label label-warning'>Degradado</span>\" : \"<span class='label label-success'>Correcto</span>\"}"
                 }
               }
             },
@@ -101,6 +156,23 @@
           ]
         },
         {
+          "type": "grid",
+          "columns": [
+            {
+              "md": 4,
+              "body": {
+                "type": "card",
+                "header": { "title": "Última patente" },
+                "body": {
+                  "type": "tpl",
+                  "className": "text-xl font-bold",
+                  "tpl": "${events.0.payload.plate_text|default:\"—\"}"
+                }
+              }
+            }
+          ]
+        },
+        {
           "type": "divider"
         },
         {
@@ -110,11 +182,11 @@
           "api": {
             "method": "get",
             "url": "/events?limit=200",
-            "adaptor": "var events = (payload && payload.events) ? payload.events : []; var counts = {}; events.forEach(function(e){ var t = (e.payload && e.payload.vehicle_type) ? e.payload.vehicle_type : 'unknown'; counts[t] = (counts[t]||0)+1; }); var keys = Object.keys(counts); return { data: { title: { text: 'Distribución por tipo de vehículo', left: 'center' }, tooltip: { trigger: 'item' }, series: [{ type: 'pie', radius: '55%', data: keys.map(function(k){ return { name: k, value: counts[k] }; }) }] } };"
+            "adaptor": "var es={vehicle:'vehiculo',car:'auto',sedan:'sedan',suv:'SUV',van:'furgoneta',truck:'camion',bus:'colectivo',mpv:'monovolumen',pickup:'pickup',unknown:'desconocido'}; var events=(payload&&payload.events)?payload.events:[]; var counts={}; events.forEach(function(e){ var t=(e.payload&&e.payload.vehicle_type)?e.payload.vehicle_type:'unknown'; t=es[t]||t; counts[t]=(counts[t]||0)+1; }); var keys=Object.keys(counts); return { data:{ title:{ text:'Distribucion por tipo de vehiculo', left:'center' }, tooltip:{ trigger:'item' }, series:[{ type:'pie', radius:'55%', data:keys.map(function(k){ return { name:k, value:counts[k] }; }) }] } };"
           },
           "interval": 2000,
           "config": {
-            "title": { "text": "Distribución por tipo de vehículo", "left": "center" },
+            "title": { "text": "Distribucion por tipo de vehiculo", "left": "center" },
             "tooltip": { "trigger": "item" },
             "series": [
               {
@@ -132,11 +204,11 @@
           "api": {
             "method": "get",
             "url": "/events?limit=200",
-            "adaptor": "var events = (payload && payload.events) ? payload.events : []; var buckets = {}; events.forEach(function(e){ var ts = e.observed_at || e.occurred_at; if(!ts) return; var d = new Date(ts); var key = d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'); buckets[key]=(buckets[key]||0)+1; }); var keys = Object.keys(buckets).sort(); return { data: { title: { text: 'Eventos por minuto (buffer)', left: 'center' }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: keys }, yAxis: { type: 'value', minInterval: 1 }, series: [{ type: 'line', smooth: true, areaStyle: {}, data: keys.map(function(k){ return buckets[k]; }) }] } };"
+            "adaptor": "var events = (payload && payload.events) ? payload.events : []; var buckets = {}; events.forEach(function(e){ var ts = e.observed_at || e.occurred_at; if(!ts) return; var d = new Date(ts); var key = d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'); buckets[key]=(buckets[key]||0)+1; }); var keys = Object.keys(buckets).sort(); return { data: { title: { text: 'Eventos por minuto (cola)', left: 'center' }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: keys }, yAxis: { type: 'value', minInterval: 1 }, series: [{ type: 'line', smooth: true, areaStyle: {}, data: keys.map(function(k){ return buckets[k]; }) }] } };"
           },
           "interval": 2000,
           "config": {
-            "title": { "text": "Eventos por minuto (buffer)", "left": "center" },
+            "title": { "text": "Eventos por minuto (cola)", "left": "center" },
             "tooltip": { "trigger": "axis" },
             "xAxis": { "type": "category", "data": [] },
             "yAxis": { "type": "value", "minInterval": 1 },
@@ -157,19 +229,19 @@
           "interval": 3000,
           "body": {
             "type": "panel",
-            "title": "Alertas de reglas (rules-sink) — ${count|default:0}",
+            "title": "Alertas de reglas — ${count|default:0}",
             "body": [
               {
                 "type": "tpl",
                 "visibleOn": "this.available === false",
                 "className": "text-muted",
-                "tpl": "Rules-sink no disponible (perfil \"rules\" apagado o relay caído)."
+                "tpl": "Motor de reglas no disponible (perfil \"rules\" apagado o relay caido)."
               },
               {
                 "type": "tpl",
                 "visibleOn": "this.available !== false && (!this.alerts || !this.alerts.length)",
                 "className": "text-muted",
-                "tpl": "Sin alertas. En demo: el adaptador solo reenvía si JETLINKS_WEBHOOK_URL apunta a rules-sink."
+                "tpl": "Sin alertas. En demo: el adaptador solo reenvia si JETLINKS_WEBHOOK_URL apunta al sink de reglas."
               },
               {
                 "type": "list",
@@ -192,7 +264,7 @@
           "syncLocation": true,
           "initFetch": true,
           "primaryField": "occurred_at",
-          "placeholder": "Sin eventos en el buffer (¿bridge emitiendo?)",
+          "placeholder": "Sin eventos en la cola (¿el puente esta emitiendo?)",
           "filter": {
             "title": "Filtro de eventos",
             "submitText": "Buscar",
@@ -202,7 +274,7 @@
                 "name": "plate",
                 "label": "Patente",
                 "clearable": true,
-                "placeholder": "Filtrar por patente… (vacío = todos)"
+                "placeholder": "Filtrar por patente… (vacio = todos)"
               }
             ]
           },
@@ -227,36 +299,39 @@
             },
             {
               "name": "entity_type",
-              "label": "Entity",
-              "type": "text"
+              "label": "Entidad",
+              "type": "tpl",
+              "tpl": "<% var m={vehicle:'vehiculo'}; %><%= m[data.entity_type] || data.entity_type || '—' %>"
             },
             {
               "name": "candidate_ids",
-              "label": "Candidates",
+              "label": "Candidatos",
               "type": "tpl",
               "tpl": "${candidate_ids|join:', '}"
             },
             {
               "name": "occurred_at",
-              "label": "Occurred At",
+              "label": "Fecha/hora",
               "type": "datetime",
               "format": "YYYY-MM-DD HH:mm:ss"
             },
             {
               "name": "confidence",
-              "label": "Confidence",
+              "label": "Confianza",
               "type": "tpl",
               "tpl": "<% var c = data.confidence || 0; var cls = c > 0.8 ? 'success' : (c > 0.5 ? 'warning' : 'danger'); %><span class='label label-<%= cls %>'><%= (c*100).toFixed(1) %>%</span>"
             },
             {
               "name": "payload.vehicle_type",
               "label": "Tipo",
-              "type": "text"
+              "type": "tpl",
+              "tpl": "<% var m={vehicle:'vehiculo',car:'auto',sedan:'sedan',suv:'SUV',van:'furgoneta',truck:'camion',bus:'colectivo',mpv:'monovolumen',pickup:'pickup',unknown:'desconocido'}; var t=data.payload&&data.payload.vehicle_type; %><%= m[t]||t||'—' %>"
             },
             {
               "name": "payload.color",
               "label": "Color",
-              "type": "text"
+              "type": "tpl",
+              "tpl": "<% var m={red:'rojo',blue:'azul',green:'verde',yellow:'amarillo',white:'blanco',black:'negro',brown:'marron',silver:'plateado',grey:'gris',gray:'gris',orange:'naranja',purple:'violeta',gold:'dorado'}; var c=data.payload&&data.payload.color; %><%= m[c]||c||'—' %>"
             }
           ]
         }

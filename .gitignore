@@ -7,3 +7,7 @@ venv/
 .mypy_cache/
 .DS_Store
 *.log
+
+# Muestras locales de video/imagen (overlay-preview) — pesadas, no versionar.
+videos_muestra/
+imagenes_muestra/
