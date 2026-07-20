@@ -45,6 +45,21 @@ JETLINKS_WEBHOOK_URL = os.getenv("JETLINKS_WEBHOOK_URL", "")  # vacío = modo MV
 JETLINKS_API_KEY = os.getenv("JETLINKS_API_KEY", "demo")
 STATIC_DIR = os.getenv("STATIC_DIR", os.path.dirname(os.path.abspath(__file__)))
 RULES_SINK_URL = os.getenv("RULES_SINK_URL", "http://rules-sink:8850")
+VI_ENV = os.getenv("VI_ENV", "development").strip().lower()
+
+
+def _enforce_production_secrets() -> None:
+    """En VI_ENV=production exige JETLINKS_API_KEY fuerte (!= demo / vacío)."""
+    if VI_ENV != "production":
+        return
+    key = (JETLINKS_API_KEY or "").strip()
+    if not key or key == "demo":
+        raise SystemExit(
+            "VI_ENV=production requires JETLINKS_API_KEY set to a non-demo secret"
+        )
+
+
+_enforce_production_secrets()
 
 # --- Selector de muestra local + preview anotado (overlay-preview) ---
 # MEDIA_DIR contiene dos subcarpetas (montadas RO en docker-compose):
@@ -251,9 +266,10 @@ async def lifespan(_app: FastAPI):
     stop = asyncio.Event()
     task = asyncio.create_task(_sweeper_loop(stop))
     logger.info(
-        "Adapter started TTL=%.1fs buffer=%d",
+        "Adapter started TTL=%.1fs buffer=%d vi_env=%s",
         TRACK_TTL_SECONDS,
         EVENTS_BUFFER_SIZE,
+        VI_ENV,
     )
     yield
     stop.set()
@@ -284,6 +300,7 @@ async def health() -> dict[str, Any]:
         "tracks_active": len(track_cache),
         "events_buffered": len(events_buffer),
         "paddlex_degraded": _stats["paddlex_degraded"],
+        "vi_env": VI_ENV,
         "utc": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -368,13 +385,16 @@ async def get_events(limit: int = 100, plate: Optional[str] = None) -> dict[str,
     }
 
 
-async def _relay_rules_sink(path: str) -> dict[str, Any]:
+async def _relay_rules_sink(path: str, *, with_api_key: bool = False) -> dict[str, Any]:
     """GET read-only a rules-sink; nunca propaga error — {available:false} en su lugar."""
     try:
         import httpx
 
+        headers = {}
+        if with_api_key:
+            headers["x-api-key"] = JETLINKS_API_KEY
         async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{RULES_SINK_URL}{path}")
+            resp = await client.get(f"{RULES_SINK_URL}{path}", headers=headers)
             resp.raise_for_status()
             return {"available": True, **resp.json()}
     except Exception as exc:
@@ -390,8 +410,8 @@ async def rules_health() -> dict[str, Any]:
 
 @app.get("/rules/alerts")
 async def rules_alerts() -> dict[str, Any]:
-    """Relay read-only de rules-sink /alerts. Falla/no disponible => {available:false, count:0, alerts:[]}."""
-    result = await _relay_rules_sink("/alerts")
+    """Relay read-only de rules-sink /alerts (con x-api-key). Falla => {available:false}."""
+    result = await _relay_rules_sink("/alerts", with_api_key=True)
     if not result.get("available"):
         return {"available": False, "count": 0, "alerts": []}
     return result
@@ -454,6 +474,17 @@ async def media_select(body: MediaSelectBody) -> JSONResponse:
     _generation += 1
     logger.info("Media selected: %s (type=%s, gen=%d)", body.name, media_type, _generation)
     return JSONResponse({"ok": True, "name": body.name, "generation": _generation})
+
+
+@app.post("/media/clear")
+async def media_clear() -> JSONResponse:
+    """Quita la muestra local: el bridge vuelve a RTSP_URL / SOURCE_URL (vivo)."""
+    global _current_media, _generation
+
+    _current_media = None
+    _generation += 1
+    logger.info("Media cleared (gen=%d) — bridge should fall back to RTSP/SOURCE_URL", _generation)
+    return JSONResponse({"ok": True, "name": None, "generation": _generation})
 
 
 @app.post("/preview/frame")

@@ -144,6 +144,8 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       - JETLINKS_WEBHOOK_URL=${JETLINKS_WEBHOOK_URL:-}
       - JETLINKS_API_KEY=${JETLINKS_API_KEY:-demo}
+      - RULES_SINK_URL=${RULES_SINK_URL:-http://rules-sink:8850}
+      - VI_ENV=${VI_ENV:-development}
       - STATIC_DIR=/app
       - MEDIA_DIR=${MEDIA_DIR:-/media}
       - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
@@ -216,7 +218,8 @@ services:
       - epp-network
     logging: *default-logging
 
-  # Bridge demo: consolida tracks + AMIS sin webcam ni PaddleX
+  # Bridge demo: consolida tracks + AMIS sin webcam ni PaddleX.
+  # NO usar junto al bridge real: mezcla detecciones sintéticas (ABC123) en /events.
   bridge-demo:
     profiles: ["demo"]
     build:
@@ -267,6 +270,7 @@ services:
     environment:
       - RULES_SINK_API_KEY=${RULES_SINK_API_KEY:-demo}
       - RULES_SINK_MAX_ALERTS=${RULES_SINK_MAX_ALERTS:-100}
+      - VI_ENV=${VI_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       # Hot-reload en desarrollo (paridad con adapter)

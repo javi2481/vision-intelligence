@@ -9,7 +9,7 @@
     },
     {
       "type": "button",
-      "label": "Ver transmisión (HLS)",
+      "label": "HLS crudo (MediaMTX, sin recuadros)",
       "level": "link",
       "actionType": "url",
       "url": "${hlsUrl}",
@@ -21,6 +21,11 @@
       "type": "panel",
       "title": "Fuente local (muestras)",
       "body": [
+        {
+          "type": "tpl",
+          "className": "text-muted m-b-sm",
+          "tpl": "La vista de abajo es el <strong>preview anotado</strong> (con recuadros). El enlace HLS del toolbar es el stream <strong>crudo</strong> de MediaMTX (sin cajas). Para RTSP en vivo: limpiar selección y publicar con <code>publish_sample</code> o <code>inject_webcam</code>."
+        },
         {
           "type": "form",
           "name": "mediaSelectForm",
@@ -44,6 +49,19 @@
               }
             }
           ]
+        },
+        {
+          "type": "button",
+          "label": "Limpiar selección (volver a RTSP vivo)",
+          "level": "default",
+          "size": "sm",
+          "className": "m-t-sm",
+          "actionType": "ajax",
+          "api": {
+            "method": "post",
+            "url": "/media/clear",
+            "adaptor": "return { status: (payload && payload.ok) ? 0 : 1, msg: '', data: payload };"
+          }
         },
         {
           "type": "service",

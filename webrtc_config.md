@@ -6,12 +6,16 @@ el navegador consume el mismo path `webcam` que inyecta FFmpeg.
 ## Requisitos
 
 1. `docker compose up` con el servicio `mediamtx` corriendo.
-2. Webcam inyectada (`inject_webcam.bat` / `inject_webcam.sh`).
+2. Fuente RTSP en el path `webcam`:
+   - Reproducible: `publish_sample.bat` / `publish_sample.sh` (loop de muestra).
+   - Hardware: `inject_webcam.bat` / `inject_webcam.sh`.
 3. Puertos publicados (ver `docker-compose.yml`):
    - `8554` — RTSP
    - `8889` — WebRTC (WHIP/WHEP)
    - `8888` — HLS (alternativa)
 
+> HLS/WebRTC = stream **crudo**. Los recuadros de detección viven en el preview
+> anotado del adapter (`/preview.mjpg`), no en MediaMTX.
 ## Abrir en el navegador
 
 Con la imagen oficial `bluenviron/mediamtx`:

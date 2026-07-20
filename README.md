@@ -44,7 +44,8 @@ El bridge envía frames a **PaddleX** y solo JSON al adaptador. El adaptador per
 | `BRIDGE_FPS` | `5` | Frecuencia de **inferencia** PaddleX (detección). Independiente del preview. |
 | `PREVIEW_FPS` | `20` | Frecuencia objetivo del video en el panel. |
 | `PREVIEW_ENCODE_MAX_WIDTH` | `960` | Ancho del JPEG del preview (más chico = más fluido). |
-| `BRIDGE_MAX_WIDTH` | `1280` | Ancho máximo de la imagen que se envía a inferencia. Sobre este umbral se reduce solo la copia de inferencia (ver abajo); a la par o por debajo no hay resize. |
+| `BRIDGE_MAX_WIDTH` | `960` | Ancho máximo de la imagen que se envía a inferencia. Sobre este umbral se reduce solo la copia de inferencia (ver abajo); a la par o por debajo no hay resize. |
+| `OVERLAY_EXTRAPOLATE_MAX_SEC` | `0.6` | Segundos máximos de proyección del bbox (compensa latencia de PaddleX). |
 | `BRIDGE_METRICS_EVERY` | `30` | Cada cuántos frames inferidos se emite una línea de métricas en el log. |
 
 ### OCR de patente (servicio `paddlex-ocr`, opcional)
@@ -75,13 +76,26 @@ local, con overlay de bbox+patente dibujado por el bridge y expuesto como
 preview en el dashboard — sin FFmpeg/MediaMTX en el camino, sin tocar
 `epp_core.py`, sin React ni webcam del usuario (EPP Punto 12).
 
+### Preview anotado vs HLS crudo
+
+| Qué ves | Dónde | Contenido |
+|---------|--------|-----------|
+| **Preview anotado** | Panel (`/preview.mjpg` / `/preview.jpg`) | Video/foto **con recuadros** dibujados por el bridge |
+| **HLS / “HLS crudo”** | Botón del toolbar → MediaMTX `:8888/webcam` | Stream **sin** recuadros (solo visualización) |
+
+No confundir ambos: la IA y los eventos salen del bridge; HLS/WebRTC son solo espejo del path MediaMTX.
+
+> **Ops:** no levantar `docker compose --profile demo` junto al bridge real.
+> `bridge-demo` postea detecciones sintéticas (`ABC123`) al mismo `/ingest` y ensucia la tabla.
+
 **Flujo**: AMIS (`select`) → `POST /media/select` (adapter valida contra el
 allow-list real de `videos_muestra/`/`imagenes_muestra/`) → el bridge polea
 `GET /media/current` y reabre su `cv2.VideoCapture` en caliente (sin reiniciar
 el contenedor) → dibuja bbox+label sobre `frame_hires` → empuja el JPEG
 anotado a `POST /preview/frame` → el dashboard lo muestra vía `/preview.mjpg`
 (video) o `/preview.jpg` (foto). `POST /ingest` sigue igual: `/events` no se
-ve afectado (dual output).
+ve afectado (dual output). `POST /media/clear` quita la muestra y el bridge
+vuelve a `RTSP_URL` (camino vivo).
 
 ### Variables de entorno
 
@@ -94,13 +108,14 @@ ve afectado (dual output).
 | `ADAPTER_PREVIEW_FRAME_URL` | `http://adapter:8000/preview/frame` | URL donde el bridge empuja el JPEG anotado. |
 | `PREVIEW_MJPEG_INTERVAL` | `0.05` | (adapter) Intervalo de re-emisión de `/preview.mjpg`. |
 
-### Endpoints nuevos (adapter)
+### Endpoints (adapter)
 
 | Endpoint | Descripción |
 |----------|-------------|
 | `GET /media/list` | `{items:[{name,type}]}` — allow-list real (archivos físicamente presentes, no recursivo). |
-| `GET /media/current` | `{name,type,generation}` — fuente activa. |
-| `POST /media/select {name}` | Selecciona una muestra allow-listed; `400` si `name` no está en la lista (path traversal incluido); no cambia la fuente activa. |
+| `GET /media/current` | `{name,type,generation}` — fuente activa (`name=null` = sin muestra → RTSP). |
+| `POST /media/select {name}` | Selecciona una muestra allow-listed; `400` si no está en la lista. |
+| `POST /media/clear` | Quita la muestra; el bridge vuelve a `RTSP_URL` / `SOURCE_URL`. |
 | `POST /preview/frame` | (uso interno del bridge) Body `image/jpeg` crudo → guarda el último frame anotado. |
 | `GET /preview.mjpg` | Stream `multipart/x-mixed-replace` del preview anotado (video). |
 | `GET /preview.jpg` | Único JPEG anotado más reciente (foto); `503` si aún no hay frame. |
@@ -111,6 +126,33 @@ ve afectado (dual output).
 2. **Foto sirve un solo frame anotado**: seleccionar una muestra de imagen (`imagenes_muestra/sample_*.jpg`); `/preview.jpg` debe devolver un único JPEG anotado (o el frame se mantiene fijo en `/preview.mjpg` si el navegador cae al fallback `onerror`).
 3. **`/events` sigue poblándose durante el preview**: con una muestra de video seleccionada, la tabla de eventos y las 4 tarjetas KPI deben seguir actualizándose exactamente igual que antes de este cambio.
 4. **Selección fuera del allow-list se rechaza**: `curl -X POST http://localhost:8000/media/select -H "Content-Type: application/json" -d "{\"name\":\"../etc/passwd\"}"` debe responder `400` y `GET /media/current` debe seguir mostrando la fuente previa sin cambios.
+
+## Camino vivo reproducible (FFmpeg → MediaMTX → bridge)
+
+Sin webcam física: publicar un archivo de muestra en loop hacia MediaMTX; el bridge
+lee `RTSP_URL` cuando **no** hay muestra seleccionada en AMIS.
+
+```bash
+# 1) Stack
+docker compose up --build -d
+
+# 2) Publicar muestra (HOST; requiere ffmpeg en PATH)
+# Windows:
+publish_sample.bat
+# Linux/macOS:
+chmod +x publish_sample.sh && ./publish_sample.sh
+
+# 3) En el panel: "Limpiar selección (volver a RTSP vivo)"
+#    Preview anotado + /events deben poblarse desde el path RTSP.
+```
+
+Prioridad de fuente del bridge:
+
+1. Muestra elegida vía `/media/select` (Approach B)
+2. Si no hay selección → `SOURCE_URL` o `RTSP_URL` (vivo / MediaMTX)
+
+Webcam física (opcional): `inject_webcam.bat` / `inject_webcam.sh` — ver también
+[`webrtc_config.md`](webrtc_config.md).
 
 ### Frame de alta resolución vs. frame de inferencia
 
@@ -223,7 +265,7 @@ a configurar reglas SQL a mano en la UI de `jetlinks`. Decide sobre los mismos
 |----------|------|-------------|
 | `POST /webhook/events` | `x-api-key` | Recibe un array de `PerceptionEvent`, evalúa la regla y devuelve `{received, alerted}` |
 | `GET /health` | No | Healthcheck para Compose |
-| `GET /alerts` | No | Últimas alertas en memoria (bounded, más nuevas primero) |
+| `GET /alerts` | `x-api-key` | Últimas alertas en memoria (bounded, más nuevas primero) |
 
 **Regla MVP**: alerta si algún `candidate_ids` empieza con `patente:` **o** si `confidence >= 0.7`.
 
@@ -233,10 +275,20 @@ Para activarlo:
 docker compose --profile rules up --build
 ```
 
-Y en `.env`, setear `JETLINKS_WEBHOOK_URL=http://rules-sink:8850/webhook/events` (mantener `JETLINKS_API_KEY == RULES_SINK_API_KEY`, ambos `demo` por default).
+Y en `.env`, setear `JETLINKS_WEBHOOK_URL=http://rules-sink:8850/webhook/events` (mantener `JETLINKS_API_KEY == RULES_SINK_API_KEY`).
 
-> **TODO auth (producción)**: la validación `x-api-key` es un secreto compartido estático pensado solo para red interna Docker (T3). No es autenticación de grado productivo — en producción reemplazar por OAuth/token real antes de exponer el servicio fuera de `epp-network`.
+### Auth producción MVP (`VI_ENV`)
 
+| Modo | Comportamiento |
+|------|----------------|
+| `VI_ENV=development` (default) | Permite `JETLINKS_API_KEY` / `RULES_SINK_API_KEY` = `demo` |
+| `VI_ENV=production` | Ambos servicios **abortan el arranque** si la clave está vacía o es `demo` |
+
+El adapter reenvía `x-api-key` en `GET /rules/alerts` hacia rules-sink.
+
+**Rotación:** cambiar el mismo valor en `.env` para `JETLINKS_API_KEY` y `RULES_SINK_API_KEY`, recrear `adapter` + `rules-sink`. No exponer `:8000` / `:8850` a Internet; TLS = reverse proxy externo.
+
+> OAuth / IdP JetLinks real queda **fuera de este sprint** (fase futura). El secreto compartido sigue siendo solo para red interna Docker / LAN controlada.
 ## Contrato epp-core (`epp_core.py`)
 
 Garantías implementadas:
@@ -261,7 +313,8 @@ El sweeper del adaptador emite al expirar el TTL del track (default 10 s) o si l
 | `dashboard.html` | Shell AMIS CDN |
 | `docker-compose.yml` | Orquestación `epp-network` |
 | `Dockerfile.*` | Imágenes adapter / bridge / paddlex |
-| `inject_webcam.*` | Publicación RTSP desde el host |
+| `inject_webcam.*` | Publicación RTSP desde webcam del host |
+| `publish_sample.*` | Publicación RTSP en loop desde video de muestra (vivo reproducible) |
 | `webrtc_config.md` | WebRTC opcional |
 | `videos_muestra/`, `imagenes_muestra/` | Muestras locales para el selector (gitignored, RO en compose) |
 

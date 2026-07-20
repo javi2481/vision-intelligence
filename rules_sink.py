@@ -38,6 +38,20 @@ logging.basicConfig(
 # el proceso siempre escucha en :8850 dentro del contenedor (ver Dockerfile.rules-sink).
 RULES_SINK_API_KEY = os.getenv("RULES_SINK_API_KEY", "demo")
 RULES_SINK_MAX_ALERTS = int(os.getenv("RULES_SINK_MAX_ALERTS", "100"))
+VI_ENV = os.getenv("VI_ENV", "development").strip().lower()
+
+
+def _enforce_production_secrets() -> None:
+    if VI_ENV != "production":
+        return
+    key = (RULES_SINK_API_KEY or "").strip()
+    if not key or key == "demo":
+        raise SystemExit(
+            "VI_ENV=production requires RULES_SINK_API_KEY set to a non-demo secret"
+        )
+
+
+_enforce_production_secrets()
 
 
 class VehiclePayloadIn(BaseModel):
@@ -147,8 +161,8 @@ async def webhook_events(events: list[PerceptionEventIn]) -> dict[str, int]:
     return {"received": len(events), "alerted": alerted}
 
 
-@app.get("/alerts")
+@app.get("/alerts", dependencies=[Depends(verify_api_key)])
 async def get_alerts() -> dict[str, Any]:
-    """Últimas alertas registradas (sin auth), acotadas a RULES_SINK_MAX_ALERTS, más nuevas primero."""
+    """Últimas alertas (requiere x-api-key), acotadas a RULES_SINK_MAX_ALERTS."""
     items = list(alerts)
     return {"count": len(items), "alerts": items}
