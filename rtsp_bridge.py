@@ -97,7 +97,11 @@ BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "960"))
 BRIDGE_METRICS_EVERY = int(os.getenv("BRIDGE_METRICS_EVERY", "30"))
 # Compensa el atraso del recuadro: proyecta bbox con velocidad del track
 # hasta el instante del frame actual (máx. segundos hacia adelante).
-OVERLAY_EXTRAPOLATE_MAX_SEC = float(os.getenv("OVERLAY_EXTRAPOLATE_MAX_SEC", "0.6"))
+# Default 2.5: PaddleX en CPU suele tardar 0.8–3s; 0.6 dejaba el bbox
+# ~2s atrás en videos_muestra (auto ya se fue, recuadro en asfalto).
+OVERLAY_EXTRAPOLATE_MAX_SEC = float(os.getenv("OVERLAY_EXTRAPOLATE_MAX_SEC", "2.5"))
+# Si la detección es más vieja que esto, no dibujar (evita fantasmas).
+OVERLAY_STALE_MAX_SEC = float(os.getenv("OVERLAY_STALE_MAX_SEC", "3.0"))
 
 # --- OCR de patente (servicio paddlex-ocr, opcional — ver docker-compose.yml) ---
 PADDLEX_OCR_URL = os.getenv("PADDLEX_OCR_URL", "http://paddlex-ocr:8081")
@@ -323,15 +327,21 @@ def _extrapolate_detections(
     prev_ts: float,
     now: float,
     max_ahead: float = OVERLAY_EXTRAPOLATE_MAX_SEC,
+    stale_max: float = OVERLAY_STALE_MAX_SEC,
 ) -> list[dict[str, Any]]:
     """Proyecta bboxes al instante `now` usando velocidad constante por track_id.
 
     `curr_ts` debe ser el timestamp del FOTOGRAMA inferido (no el de fin de
     inferencia): si PaddleX tarda 0.4s, sin esto el recuadro ya nace atrasado.
+
+    Si `now - curr_ts` supera `stale_max`, devuelve [] (no dibujar fantasmas
+    sobre asfalto cuando el auto ya salió del frame).
     """
     if not curr:
         return curr
     dt_ahead = now - curr_ts
+    if dt_ahead > float(stale_max):
+        return []
     if dt_ahead <= 0.001 or not prev or curr_ts <= prev_ts:
         return curr
     dt_hist = curr_ts - prev_ts
@@ -815,6 +825,7 @@ async def run_loop() -> None:
                 prev_detections: list[dict[str, Any]] = []
                 curr_det_ts = 0.0
                 prev_det_ts = 0.0
+                last_infer_sec = 0.0
                 infer_task: Optional[asyncio.Task] = None
                 infer_started_at = 0.0
                 preview_push_task: Optional[asyncio.Task] = None
@@ -863,13 +874,15 @@ async def run_loop() -> None:
                     if infer_task is not None and infer_task.done():
                         try:
                             detections, _degraded = infer_task.result()
-                            infer_ms = (time.monotonic() - infer_started_at) * 1000.0
+                            last_infer_sec = time.monotonic() - infer_started_at
+                            infer_ms = last_infer_sec * 1000.0
                             if detections is not None:
                                 prev_detections = last_detections
                                 prev_det_ts = curr_det_ts
+                                # Lista vacía: limpiar overlay (sin fantasmas).
                                 last_detections = detections
                                 # Timestamp del FOTOGRAMA analizado, no del fin
-                                # de inferencia (compensa los ~400ms de PaddleX).
+                                # de inferencia (compensa latencia de PaddleX).
                                 curr_det_ts = infer_started_at
                                 await _post_json(
                                     client,
@@ -907,13 +920,21 @@ async def run_loop() -> None:
                             _run_detections(client, frame_hires.copy())
                         )
 
-                    # Solo frames ACTUALES; bbox proyectado al instante actual.
+                    # Proyectar hasta latencia medida (acotada a stale_max).
+                    if last_infer_sec > 0:
+                        max_ahead = min(
+                            OVERLAY_STALE_MAX_SEC,
+                            max(OVERLAY_EXTRAPOLATE_MAX_SEC, last_infer_sec * 1.05),
+                        )
+                    else:
+                        max_ahead = OVERLAY_EXTRAPOLATE_MAX_SEC
                     dets_draw = _extrapolate_detections(
                         last_detections,
                         curr_det_ts,
                         prev_detections,
                         prev_det_ts,
                         now,
+                        max_ahead=max_ahead,
                     )
                     annotated = _draw_overlay(frame_hires, dets_draw)
                     preview_jpeg = _encode_preview_jpeg(annotated)

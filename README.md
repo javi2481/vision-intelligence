@@ -45,7 +45,8 @@ El bridge envía frames a **PaddleX** y solo JSON al adaptador. El adaptador per
 | `PREVIEW_FPS` | `20` | Frecuencia objetivo del video en el panel. |
 | `PREVIEW_ENCODE_MAX_WIDTH` | `960` | Ancho del JPEG del preview (más chico = más fluido). |
 | `BRIDGE_MAX_WIDTH` | `960` | Ancho máximo de la imagen que se envía a inferencia. Sobre este umbral se reduce solo la copia de inferencia (ver abajo); a la par o por debajo no hay resize. |
-| `OVERLAY_EXTRAPOLATE_MAX_SEC` | `0.6` | Segundos máximos de proyección del bbox (compensa latencia de PaddleX). |
+| `OVERLAY_EXTRAPOLATE_MAX_SEC` | `2.5` | Segundos máximos de proyección del bbox (compensa latencia de PaddleX). |
+| `OVERLAY_STALE_MAX_SEC` | `3.0` | Si la detección es más vieja, no se dibuja (evita fantasmas en asfalto). |
 | `BRIDGE_METRICS_EVERY` | `30` | Cada cuántos frames inferidos se emite una línea de métricas en el log. |
 
 ### OCR de patente (servicio `paddlex-ocr`, opcional)

@@ -200,6 +200,22 @@ class ExtrapolateDetectionsTests(unittest.TestCase):
         out = _extrapolate_detections(curr, 1.0, None, 0.0, 1.5)
         self.assertEqual(out[0]["bbox"], [10.0, 0.0, 20.0, 10.0])
 
+    def test_stale_returns_empty(self) -> None:
+        curr = [{"track_id": "1", "bbox": [10.0, 0.0, 20.0, 10.0]}]
+        out = _extrapolate_detections(
+            curr, 1.0, None, 0.0, 5.0, max_ahead=2.5, stale_max=3.0
+        )
+        self.assertEqual(out, [])
+
+    def test_projects_up_to_higher_max_ahead(self) -> None:
+        prev = [{"track_id": "1", "bbox": [0.0, 0.0, 10.0, 10.0], "label": "car"}]
+        curr = [{"track_id": "1", "bbox": [10.0, 0.0, 20.0, 10.0], "label": "car"}]
+        # 2.0s adelante a 10 px/s => +20 (antes el tope 0.6 dejaba solo +6)
+        out = _extrapolate_detections(
+            curr, 1.0, prev, 0.0, 3.0, max_ahead=2.5, stale_max=3.0
+        )
+        self.assertEqual(out[0]["bbox"], [30.0, 0.0, 40.0, 10.0])
+
 
 if __name__ == "__main__":
     unittest.main()
