@@ -387,4 +387,159 @@ services:
     container_name: vi-bridge
     restart: unless-stopped
     depends_on:
-    
+      adapter:
+        condition: service_healthy
+    environment:
+      - PYTHONPATH=/app
+      - MEDIA_DIR=${MEDIA_DIR:-/media}
+      - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
+      - ADAPTER_INGEST_URL=${ADAPTER_INGEST_URL:-http://adapter:8000/ingest}
+      - ADAPTER_MEDIA_CURRENT_URL=${ADAPTER_MEDIA_CURRENT_URL:-http://adapter:8000/media/current}
+      - ADAPTER_PREVIEW_FRAME_URL=${ADAPTER_PREVIEW_FRAME_URL:-http://adapter:8000/preview/frame}
+      - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
+      - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
+      - BRIDGE_FPS=${BRIDGE_FPS:-1}
+      - BRIDGE_MAX_WIDTH=${BRIDGE_MAX_WIDTH:-960}
+      - JPEG_QUALITY=${JPEG_QUALITY:-80}
+      - DEMO_MODE=${DEMO_MODE:-0}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HTTP_TIMEOUT=${HTTP_TIMEOUT:-30}
+      - PADDLEX_OCR_URL=${PADDLEX_OCR_URL:-http://paddlex-ocr:8081}
+      - PADDLEX_OBJECTS_URL=${PADDLEX_OBJECTS_URL:-http://paddlex-objects:8082}
+      - PADDLEX_OBJECTS_PREDICT_PATH=${PADDLEX_OBJECTS_PREDICT_PATH:-/object-detection}
+      - ENABLE_PLATE_OCR=${ENABLE_PLATE_OCR:-false}
+      - OCR_MIN_SCORE=${OCR_MIN_SCORE:-0.7}
+      - OCR_EVERY_N_FRAMES=${OCR_EVERY_N_FRAMES:-5}
+      - OCR_TOPK=${OCR_TOPK:-3}
+      - OCR_HTTP_TIMEOUT=${OCR_HTTP_TIMEOUT:-5}
+      - PADDLEX_FACES_URL=${PADDLEX_FACES_URL:-http://paddlex-faces:8083}
+      - PADDLEX_FACES_PREDICT_PATH=${PADDLEX_FACES_PREDICT_PATH:-/face-detection}
+      - ENABLE_FACE_DETECTION=${ENABLE_FACE_DETECTION:-false}
+      - PADDLEX_PEDESTRIANS_URL=${PADDLEX_PEDESTRIANS_URL:-http://paddlex-pedestrians:8084}
+      - PADDLEX_PEDESTRIANS_PREDICT_PATH=${PADDLEX_PEDESTRIANS_PREDICT_PATH:-/pedestrian-attribute-recognition}
+      - ENABLE_PEDESTRIAN_ATTRS=${ENABLE_PEDESTRIAN_ATTRS:-false}
+      - PADDLEX_SCENE_URL=${PADDLEX_SCENE_URL:-http://paddlex-scene:8085}
+      - PADDLEX_SCENE_PREDICT_PATH=${PADDLEX_SCENE_PREDICT_PATH:-/semantic-segmentation}
+      - ENABLE_SCENE_SEG=${ENABLE_SCENE_SEG:-false}
+      - SCENE_LABEL_MODE=${SCENE_LABEL_MODE:-cityscapes}
+      - CROSSWALK_MIN_RATIO=${CROSSWALK_MIN_RATIO:-0.01}
+      - ENABLE_POSE=${ENABLE_POSE:-false}
+      - PADDLEX_POSE_URL=${PADDLEX_POSE_URL:-http://paddlex-pose:8086}
+      - ENABLE_SCENE_OCR=${ENABLE_SCENE_OCR:-false}
+      - SCENE_OCR_MIN_SCORE=${SCENE_OCR_MIN_SCORE:-0.5}
+      - SCENE_OCR_MAX_LINES=${SCENE_OCR_MAX_LINES:-20}
+      - ENABLE_FACE_ID=${ENABLE_FACE_ID:-false}
+      - PADDLEX_FACE_ID_URL=${PADDLEX_FACE_ID_URL:-http://paddlex-face-id:8087}
+      - ENABLE_SIGNS=${ENABLE_SIGNS:-false}
+      - PADDLEX_SIGNS_URL=${PADDLEX_SIGNS_URL:-http://paddlex-signs:8088}
+      - SIGNS_LABELS=${SIGNS_LABELS:-}
+      - ENABLE_SCENE_CLS=${ENABLE_SCENE_CLS:-false}
+      - PADDLEX_SCENE_CLS_URL=${PADDLEX_SCENE_CLS_URL:-http://paddlex-scene-cls:8089}
+      - ENABLE_INSTANCE_SEG=${ENABLE_INSTANCE_SEG:-false}
+      - PADDLEX_INSTANCES_URL=${PADDLEX_INSTANCES_URL:-http://paddlex-instances:8090}
+      - ENABLE_SMALL_OBJECTS=${ENABLE_SMALL_OBJECTS:-false}
+      - PADDLEX_SMALL_OBJECTS_URL=${PADDLEX_SMALL_OBJECTS_URL:-http://paddlex-small-objects:8091}
+      - ENABLE_ANOMALY=${ENABLE_ANOMALY:-false}
+      - PADDLEX_ANOMALY_URL=${PADDLEX_ANOMALY_URL:-http://paddlex-anomaly:8092}
+      - ENABLE_OPEN_VOCAB=${ENABLE_OPEN_VOCAB:-false}
+      - PADDLEX_OPEN_VOCAB_URL=${PADDLEX_OPEN_VOCAB_URL:-http://paddlex-open-vocab:8093}
+      - OPEN_VOCAB_PROMPT=${OPEN_VOCAB_PROMPT:-person,car,traffic sign}
+    volumes:
+      - ./detection:/app/detection:ro
+      - ./bridge:/app/bridge:ro
+      - ./imagenes_muestra:/media/images:ro
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  bridge-demo:
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: bridge/Dockerfile
+    image: vision-intelligence/bridge:local
+    container_name: vi-bridge-demo
+    restart: unless-stopped
+    depends_on:
+      adapter:
+        condition: service_healthy
+    environment:
+      - PYTHONPATH=/app
+      - ADAPTER_INGEST_URL=http://adapter:8000/ingest
+      - DEMO_MODE=1
+      - BRIDGE_FPS=1
+      - LOG_LEVEL=INFO
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  jetlinks:
+    profiles: ["rules"]
+    image: jetlinks/jetlinks-standalone:latest
+    container_name: vi-jetlinks
+    restart: unless-stopped
+    ports:
+      - "${JETLINKS_PORT:-8848}:8848"
+    environment:
+      - JAVA_OPTS=-Xmx512m
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  rules-sink:
+    profiles: ["rules"]
+    build:
+      context: .
+      dockerfile: rules/Dockerfile
+    image: vision-intelligence/rules-sink:local
+    container_name: vi-rules-sink
+    restart: unless-stopped
+    ports:
+      - "${RULES_SINK_PORT:-8850}:8850"
+    environment:
+      - PYTHONPATH=/app
+      - RULES_SINK_API_KEY=${RULES_SINK_API_KEY:-demo}
+      - RULES_SINK_MAX_ALERTS=${RULES_SINK_MAX_ALERTS:-100}
+      - VI_ENV=${VI_ENV:-development}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./rules:/app/rules
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8850/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    logging: *default-logging
+
+volumes:
+  paddlex-models:
+    name: vi-paddlex-models
+  paddlex-ocr-models:
+    name: vi-paddlex-ocr-models
+  paddlex-objects-models:
+    name: vi-paddlex-objects-models
+  paddlex-faces-models:
+    name: vi-paddlex-faces-models
+  paddlex-pedestrians-models:
+    name: vi-paddlex-pedestrians-models
+  paddlex-scene-models:
+    name: vi-paddlex-scene-models
+  paddlex-pose-models:
+    name: vi-paddlex-pose-models
+  paddlex-face-id-models:
+    name: vi-paddlex-face-id-models
+  paddlex-signs-models:
+    name: vi-paddlex-signs-models
+  paddlex-scene-cls-models:
+    name: vi-paddlex-scene-cls-models
+  paddlex-instances-models:
+    name: vi-paddlex-instances-models
+  paddlex-small-objects-models:
+    name: vi-paddlex-small-objects-models
+  paddlex-anomaly-models:
+    name: vi-paddlex-anomaly-models
+  paddlex-open-vocab-models:
+    name: vi-paddlex-open-vocab-models
