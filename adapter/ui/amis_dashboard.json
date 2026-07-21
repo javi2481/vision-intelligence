@@ -115,7 +115,7 @@
       "api": {
         "method": "get",
         "url": "/events?limit=100",
-        "adaptor": "var TYPE={vehicle:'Vehículo',car:'Auto',sedan:'Sedán',suv:'SUV',van:'Furgoneta',truck:'Camión',bus:'Colectivo',mpv:'Monovolumen',pickup:'Pickup',hatchback:'Hatchback',unknown:'Desconocido',person:'Persona',bicycle:'Bicicleta',motorcycle:'Motocicleta',dog:'Perro',cat:'Gato',backpack:'Mochila',handbag:'Bolso',umbrella:'Paraguas',suitcase:'Maleta','cell phone':'Celular',bottle:'Botella',chair:'Silla',bench:'Banco','traffic light':'Semáforo','stop sign':'Señal de stop'}; var COLOR={red:'Rojo',blue:'Azul',green:'Verde',yellow:'Amarillo',white:'Blanco',black:'Negro',brown:'Marrón',silver:'Plateado',grey:'Gris',gray:'Gris',orange:'Naranja',purple:'Violeta',gold:'Dorado',golden:'Dorado'}; var events=(payload&&payload.events)||[]; var counts={}; var rows=events.map(function(e,i){ var rawT=(e.payload&&(e.payload.vehicle_type||e.payload.class_name))||'unknown'; var rawC=(e.payload&&e.payload.color)||null; var tipo=TYPE[rawT]||rawT; var color=rawC?(COLOR[rawC]||rawC):'—'; counts[tipo]=(counts[tipo]||0)+1; var conf=e.confidence||0; return { n:i+1, tipo:tipo, color:color, conf:Math.round(conf*100), conf_label:(conf*100).toFixed(0)+'%', conf_level: conf>0.85?'alta':(conf>0.6?'media':'baja') }; }); var keys=Object.keys(counts); var pieData=keys.map(function(k){ return { name:k, value:counts[k] }; }); return { status:0, data:{ count:rows.length, degraded:!!(payload&&payload.degraded), empty:rows.length===0, rows:rows, pieData:pieData, chartConfig:{ color:['#0b6bcb','#e85d04','#2a9d8f','#9b5de5','#ef476f','#118ab2','#ffb703'], title:{ text:'Tipos en esta foto', left:'center', top:8, textStyle:{ fontSize:15, fontWeight:600, color:'#1a1f24' } }, tooltip:{ trigger:'item', formatter:'{b}: {c} ({d}%)' }, legend:{ bottom:4, type:'scroll' }, series:[{ type:'pie', radius:['40%','66%'], center:['50%','52%'], avoidLabelOverlap:true, itemStyle:{ borderRadius:8, borderColor:'#fff', borderWidth:2 }, label:{ formatter:'{b}\\n{d}%', fontSize:11 }, data:pieData }] } } };"
+        "adaptor": "var TYPE={vehicle:'Vehículo',car:'Auto',sedan:'Sedán',suv:'SUV',van:'Furgoneta',truck:'Camión',bus:'Colectivo',mpv:'Monovolumen',pickup:'Pickup',hatchback:'Hatchback',unknown:'Desconocido',person:'Persona',person_pose:'Pose',bicycle:'Bicicleta',motorcycle:'Motocicleta',dog:'Perro',cat:'Gato',backpack:'Mochila',handbag:'Bolso',umbrella:'Paraguas',suitcase:'Maleta','cell phone':'Celular',bottle:'Botella',chair:'Silla',bench:'Banco','traffic light':'Semáforo','stop sign':'Señal de stop',face:'Rostro',street:'Calle',highway:'Autopista',parking:'Estacionamiento',rural:'Rural',text:'Texto',sign:'Señal'}; var ENTITY={vehicle:'Vehículo',object:'Objeto',face:'Rostro',face_id:'Identidad',scene:'Escena',pose:'Pose',text:'Texto',sign:'Señal',scene_cls:'Clase escena',instance:'Instancia',small_object:'Obj. pequeño',anomaly:'Anomalía',open_vocab:'Open-vocab'}; var COLOR={red:'Rojo',blue:'Azul',green:'Verde',yellow:'Amarillo',white:'Blanco',black:'Negro',brown:'Marrón',silver:'Plateado',grey:'Gris',gray:'Gris',orange:'Naranja',purple:'Violeta',gold:'Dorado',golden:'Dorado'}; var events=(payload&&payload.events)||[]; var counts={}; var rows=events.map(function(e,i){ var et=e.entity_type||'vehicle'; var p=e.payload||{}; var rawT=p.vehicle_type||p.class_name||p.scene_type||p.identity||p.text||'unknown'; var rawC=p.color||null; var tipo=TYPE[rawT]||rawT; var entidad=ENTITY[et]||et; var color=rawC?(COLOR[rawC]||rawC):'—'; var extra='—'; if(et==='scene'&&p.scene){ var sc=p.scene; var bits=[]; if(sc.type) bits.push(sc.type); if(sc.crosswalk&&sc.crosswalk.present) bits.push('cruce'); if(sc.lanes&&sc.lanes.present) bits.push('carriles'); extra=bits.join(' · ')||'—'; } else if(p.person){ var pr=p.person; extra=[pr.gender,pr.age_group,pr.upper_color].filter(Boolean).join(' · ')||'—'; } else if(p.text){ extra=String(p.text).slice(0,40); } else if(p.keypoints){ extra='kp:'+p.keypoints.length; } else if(p.identity){ extra=String(p.identity); } counts[entidad]=(counts[entidad]||0)+1; var conf=e.confidence||0; return { n:i+1, entidad:entidad, tipo:tipo, color:color, extra:extra, conf:Math.round(conf*100), conf_label:(conf*100).toFixed(0)+'%', conf_level: conf>0.85?'alta':(conf>0.6?'media':'baja') }; }); var keys=Object.keys(counts); var pieData=keys.map(function(k){ return { name:k, value:counts[k] }; }); return { status:0, data:{ count:rows.length, degraded:!!(payload&&payload.degraded), empty:rows.length===0, rows:rows, pieData:pieData, chartConfig:{ color:['#0b6bcb','#e85d04','#2a9d8f','#9b5de5','#ef476f','#118ab2','#ffb703'], title:{ text:'Entidades en esta foto', left:'center', top:8, textStyle:{ fontSize:15, fontWeight:600, color:'#1a1f24' } }, tooltip:{ trigger:'item', formatter:'{b}: {c} ({d}%)' }, legend:{ bottom:4, type:'scroll' }, series:[{ type:'pie', radius:['40%','66%'], center:['50%','52%'], avoidLabelOverlap:true, itemStyle:{ borderRadius:8, borderColor:'#fff', borderWidth:2 }, label:{ formatter:'{b}\\n{d}%', fontSize:11 }, data:pieData }] } } };"
       },
       "interval": 4000,
       "silentPolling": true,
@@ -185,11 +185,83 @@
                     "source": "${rows}",
                     "columnsTogglable": false,
                     "footable": false,
+                    "searchable": true,
                     "columns": [
                       {
                         "name": "n",
                         "label": "#",
                         "width": 48
+                      },
+                      {
+                        "name": "entidad",
+                        "label": "Entidad",
+                        "type": "tpl",
+                        "tpl": "<span class=\"vi-pill vi-pill-type\">${entidad}</span>",
+                        "searchable": {
+                          "type": "select",
+                          "name": "entidad",
+                          "label": "Filtrar entidad",
+                          "clearable": true,
+                          "searchable": true,
+                          "options": [
+                            {
+                              "label": "Vehículo",
+                              "value": "Vehículo"
+                            },
+                            {
+                              "label": "Objeto",
+                              "value": "Objeto"
+                            },
+                            {
+                              "label": "Rostro",
+                              "value": "Rostro"
+                            },
+                            {
+                              "label": "Identidad",
+                              "value": "Identidad"
+                            },
+                            {
+                              "label": "Escena",
+                              "value": "Escena"
+                            },
+                            {
+                              "label": "Pose",
+                              "value": "Pose"
+                            },
+                            {
+                              "label": "Texto",
+                              "value": "Texto"
+                            },
+                            {
+                              "label": "Señal",
+                              "value": "Señal"
+                            },
+                            {
+                              "label": "Persona",
+                              "value": "Persona"
+                            },
+                            {
+                              "label": "Clase escena",
+                              "value": "Clase escena"
+                            },
+                            {
+                              "label": "Instancia",
+                              "value": "Instancia"
+                            },
+                            {
+                              "label": "Obj. pequeño",
+                              "value": "Obj. pequeño"
+                            },
+                            {
+                              "label": "Anomalía",
+                              "value": "Anomalía"
+                            },
+                            {
+                              "label": "Open-vocab",
+                              "value": "Open-vocab"
+                            }
+                          ]
+                        }
                       },
                       {
                         "name": "tipo",
@@ -202,6 +274,12 @@
                         "label": "Color",
                         "type": "tpl",
                         "tpl": "<span class=\"vi-pill vi-pill-color\">${color}</span>"
+                      },
+                      {
+                        "name": "extra",
+                        "label": "Detalle",
+                        "type": "tpl",
+                        "tpl": "<span class=\"vi-muted\">${extra}</span>"
                       },
                       {
                         "name": "conf_label",

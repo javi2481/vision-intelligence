@@ -24,7 +24,14 @@ from detection.common.geometry import (
     scale_detections,
 )
 from detection.common.preview import draw_preview, preview_box_color, preview_label
+from detection.faces import normalize_face_result
 from detection.objects import merge_coco_detections, normalize_object_detection_result
+from detection.pedestrians import merge_person_attributes, parse_person_attributes
+from detection.scene import (
+    class_ratios_from_label_map,
+    infer_scene_type,
+    normalize_scene_result,
+)
 from detection.vehicles import (
     decode_paddlex_result_image,
     normalize_vehicle_result,
@@ -317,6 +324,223 @@ class DrawPreviewTests(unittest.TestCase):
         assert jpeg is not None
         self.assertTrue(jpeg.startswith(b"\xff\xd8"))
 
+    def test_scene_badge_still_returns_jpeg(self) -> None:
+        frame = np.zeros((80, 100, 3), dtype=np.uint8)
+        dets = [
+            {
+                "track_id": "scene-0",
+                "entity_type": "scene",
+                "label": "street",
+                "score": 0.7,
+                "bbox": [0, 0, 100, 80],
+                "scene": {"type": "street"},
+            }
+        ]
+        jpeg = draw_preview(frame, dets)
+        self.assertIsNotNone(jpeg)
+
+
+class NormalizeFaceResultTests(unittest.TestCase):
+    def test_parses_boxes(self) -> None:
+        data = {
+            "result": {
+                "boxes": [
+                    {"score": 0.95, "coordinate": [1, 2, 30, 40]},
+                ]
+            }
+        }
+        dets = normalize_face_result(data)
+        self.assertEqual(len(dets), 1)
+        self.assertEqual(dets[0]["entity_type"], "face")
+        self.assertEqual(dets[0]["label"], "face")
+        self.assertTrue(str(dets[0]["track_id"]).startswith("f-"))
+
+
+class MergePersonAttributesTests(unittest.TestCase):
+    def test_enriches_matching_person(self) -> None:
+        objects = [
+            {
+                "track_id": "o-1",
+                "label": "person",
+                "score": 0.9,
+                "bbox": [10.0, 10.0, 50.0, 100.0],
+                "entity_type": "object",
+            }
+        ]
+        attrs = [
+            {
+                "label": "person",
+                "score": 0.8,
+                "bbox": [12.0, 12.0, 48.0, 98.0],
+                "person": {"gender": "female", "age_group": "adult"},
+                "entity_type": "object",
+            }
+        ]
+        merged = merge_person_attributes(objects, attrs)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["person"]["gender"], "female")
+
+    def test_orphan_attr_appended(self) -> None:
+        objects = [
+            {
+                "track_id": "o-1",
+                "label": "dog",
+                "score": 0.9,
+                "bbox": [10.0, 10.0, 20.0, 20.0],
+                "entity_type": "object",
+            }
+        ]
+        attrs = [
+            {
+                "label": "person",
+                "score": 0.7,
+                "bbox": [100.0, 100.0, 140.0, 200.0],
+                "person": {"gender": "male"},
+                "entity_type": "object",
+            }
+        ]
+        merged = merge_person_attributes(objects, attrs)
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(merged[1]["label"], "person")
+        self.assertEqual(merged[1]["person"]["gender"], "male")
+
+
+class ParsePersonAttributesTests(unittest.TestCase):
+    def test_gender_and_age(self) -> None:
+        attrs = parse_person_attributes(
+            ["Female(女)", "Adult(成人)", "front"],
+            [0.9, 0.8, 0.7],
+        )
+        self.assertEqual(attrs["gender"], "female")
+        self.assertEqual(attrs["age_group"], "adult")
+        self.assertEqual(attrs["direction"], "front")
+
+
+class SceneHeuristicsTests(unittest.TestCase):
+    def test_highway_from_ratios(self) -> None:
+        stype, conf = infer_scene_type(
+            {"road": 0.45, "sidewalk": 0.01, "building": 0.05, "sky": 0.2}
+        )
+        self.assertEqual(stype, "highway")
+        self.assertGreaterEqual(conf, 0.4)
+
+    def test_street_from_ratios(self) -> None:
+        stype, _ = infer_scene_type(
+            {"road": 0.25, "sidewalk": 0.08, "building": 0.3, "sky": 0.1}
+        )
+        self.assertEqual(stype, "street")
+
+    def test_normalize_scene_cityscapes(self) -> None:
+        # 100 px: 60 road, 20 sidewalk, 20 building
+        label_map = [0] * 60 + [1] * 20 + [2] * 20
+        data = {"result": {"labelMap": label_map, "shape": [10, 10]}}
+        det = normalize_scene_result(data, frame_wh=(10, 10), label_mode="cityscapes")
+        self.assertIsNotNone(det)
+        assert det is not None
+        self.assertEqual(det["entity_type"], "scene")
+        self.assertEqual(det["track_id"], "scene-0")
+        self.assertIn(det["label"], {"street", "highway", "parking", "rural", "unknown"})
+        self.assertIsNone(det["scene"]["crosswalk"])
+        self.assertIsNone(det["scene"]["lanes"])
+
+    def test_normalize_scene_lane_mode(self) -> None:
+        label_map = [0] * 80 + [2] * 15 + [3] * 5
+        data = {"result": {"labelMap": label_map}}
+        det = normalize_scene_result(data, frame_wh=(20, 5), label_mode="lane")
+        self.assertIsNotNone(det)
+        assert det is not None
+        self.assertIsNotNone(det["scene"]["lanes"])
+        self.assertTrue(det["scene"]["lanes"]["present"])
+
+
+    def test_bdd_marks_crosswalk(self) -> None:
+        label_map = [0] * 40 + [6] * 30 + [8] * 30
+        data = {"result": {"labelMap": label_map}}
+        det = normalize_scene_result(
+            data, frame_wh=(10, 10), label_mode="bdd_marks"
+        )
+        self.assertIsNotNone(det)
+        assert det is not None
+        self.assertIsNotNone(det["scene"]["crosswalk"])
+        self.assertTrue(det["scene"]["crosswalk"]["present"])
+
+    def test_class_ratios(self) -> None:
+        ratios = class_ratios_from_label_map(
+            [0, 0, 1, 1], {0: "road", 1: "sidewalk"}
+        )
+        self.assertAlmostEqual(ratios["road"], 0.5)
+        self.assertAlmostEqual(ratios["sidewalk"], 0.5)
+
+
+class NormalizePoseAndTextTests(unittest.TestCase):
+    def test_pose_boxes(self) -> None:
+        from detection.pose import normalize_pose_result
+
+        dets = normalize_pose_result(
+            {
+                "result": {
+                    "boxes": [
+                        {
+                            "score": 0.9,
+                            "coordinate": [1, 2, 30, 80],
+                            "keypoints": [[1, 2], [30, 80]],
+                        }
+                    ]
+                }
+            }
+        )
+        self.assertEqual(len(dets), 1)
+        self.assertEqual(dets[0]["entity_type"], "pose")
+        self.assertTrue(str(dets[0]["track_id"]).startswith("k-"))
+
+    def test_scene_ocr_lines(self) -> None:
+        from detection.text import normalize_scene_ocr_result
+
+        dets = normalize_scene_ocr_result(
+            {
+                "result": {
+                    "ocrResults": [
+                        {
+                            "prunedResult": {
+                                "rec_texts": ["STOP", "ABC"],
+                                "rec_scores": [0.95, 0.4],
+                                "dt_polys": [
+                                    [[0, 0], [10, 0], [10, 5], [0, 5]],
+                                    [[0, 0], [1, 0], [1, 1], [0, 1]],
+                                ],
+                            }
+                        }
+                    ]
+                }
+            }
+        )
+        self.assertEqual(len(dets), 1)
+        self.assertEqual(dets[0]["text"], "STOP")
+        self.assertEqual(dets[0]["entity_type"], "text")
+
+    def test_signs_filter(self) -> None:
+        from detection.signs import normalize_signs_result
+
+        dets = normalize_signs_result(
+            {
+                "result": {
+                    "boxes": [
+                        {
+                            "label": "stop sign",
+                            "score": 0.9,
+                            "coordinate": [1, 2, 3, 4],
+                        },
+                        {
+                            "label": "person",
+                            "score": 0.9,
+                            "coordinate": [5, 6, 7, 8],
+                        },
+                    ]
+                }
+            }
+        )
+        self.assertEqual(len(dets), 1)
+        self.assertEqual(dets[0]["entity_type"], "sign")
 
 if __name__ == "__main__":
     unittest.main()

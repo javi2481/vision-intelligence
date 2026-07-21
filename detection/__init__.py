@@ -1,1 +1,1 @@
-"""Capacidades de detección: vehicles, objects (COCO), plates (OCR)."""
+"""Capacidades de detección (vehicles…open_vocab). Ver detection/README.md."""

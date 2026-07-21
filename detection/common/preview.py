@@ -37,7 +37,33 @@ _PREVIEW_FALLBACK_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
 
 
 def preview_label(det: dict[str, Any]) -> str:
-    """Texto de etiqueta en inglés para el overlay (tipo + color)."""
+    """Texto de etiqueta en inglés para el overlay (tipo + color / attrs)."""
+    entity = str(det.get("entity_type") or "").strip().lower()
+    if entity == "scene":
+        scene = det.get("scene") if isinstance(det.get("scene"), dict) else {}
+        stype = (scene or {}).get("type") or det.get("label") or "scene"
+        parts = [f"scene:{stype}"]
+        cw = (scene or {}).get("crosswalk") if isinstance(scene, dict) else None
+        if isinstance(cw, dict) and cw.get("present"):
+            parts.append("xwalk")
+        lanes = (scene or {}).get("lanes") if isinstance(scene, dict) else None
+        if isinstance(lanes, dict) and lanes.get("present"):
+            parts.append("lanes")
+        return " ".join(parts)
+    if entity == "face":
+        return "face"
+    if entity == "face_id":
+        return f"id:{det.get('identity') or det.get('label') or '?'}"
+    if entity == "text":
+        t = str(det.get("text") or det.get("label") or "text")
+        return t[:24]
+    if entity == "pose":
+        return "pose"
+    if entity == "sign":
+        return f"sign:{det.get('label') or '?'}"
+    if entity in {"scene_cls", "anomaly", "instance", "small_object", "open_vocab"}:
+        return f"{entity}:{det.get('label') or '?'}"
+
     parts: list[str] = []
     label = det.get("label")
     color = det.get("color")
@@ -45,12 +71,38 @@ def preview_label(det: dict[str, Any]) -> str:
         parts.append(str(label))
     if color:
         parts.append(str(color))
+    person = det.get("person") if isinstance(det.get("person"), dict) else None
+    if person:
+        gender = person.get("gender")
+        age = person.get("age_group")
+        if gender:
+            parts.append(str(gender)[0].upper())
+        if age:
+            parts.append(str(age))
     return " ".join(parts) or "vehicle"
 
 
 def preview_box_color(det: dict[str, Any]) -> tuple[int, int, int]:
-    """Color BGR estable por tipo de vehículo (o track_id si falta tipo)."""
+    """Color BGR estable por tipo de entidad / vehículo."""
+    entity = str(det.get("entity_type") or "").strip().lower()
+    entity_colors = {
+        "face": (0, 200, 255),
+        "face_id": (0, 165, 255),
+        "scene": (180, 180, 180),
+        "pose": (255, 100, 50),
+        "text": (200, 200, 50),
+        "sign": (50, 50, 220),
+        "scene_cls": (160, 160, 100),
+        "instance": (100, 180, 100),
+        "small_object": (100, 100, 255),
+        "anomaly": (0, 0, 220),
+        "open_vocab": (180, 100, 180),
+    }
+    if entity in entity_colors:
+        return entity_colors[entity]
     label = str(det.get("label") or "").strip().lower()
+    if label == "person":
+        return (80, 200, 80)
     if label in _PREVIEW_TYPE_COLORS_BGR:
         return _PREVIEW_TYPE_COLORS_BGR[label]
     tid = str(det.get("track_id") or "0")
@@ -60,9 +112,27 @@ def preview_box_color(det: dict[str, Any]) -> tuple[int, int, int]:
 
 
 def draw_preview(frame, detections: list[dict[str, Any]]) -> Optional[bytes]:
-    """Dibuja bboxes + labels EN y devuelve JPEG. None si el encode falla."""
+    """Dibuja bboxes + labels EN y badge de escena. None si encode falla."""
     canvas = frame.copy()
     for det in detections or []:
+        entity = str(det.get("entity_type") or "").strip().lower()
+        if entity == "scene":
+            scene = det.get("scene") if isinstance(det.get("scene"), dict) else {}
+            stype = (scene or {}).get("type") or det.get("label") or "scene"
+            badge = f"scene:{stype}"
+            cv2.rectangle(canvas, (8, 8), (8 + 12 * len(badge), 36), (40, 40, 40), -1)
+            cv2.putText(
+                canvas,
+                badge,
+                (12, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            continue
+
         bbox = det.get("bbox")
         if not bbox or len(bbox) < 4:
             continue

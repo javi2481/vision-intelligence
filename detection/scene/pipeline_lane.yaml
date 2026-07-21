@@ -1,0 +1,21 @@
+# Stub lane-seg (PP-Vehicle / PP-LiteSeg BDD, 4 clases).
+#
+# Pesos oficiales PP-Vehicle (descargar y montar):
+#   https://bj.bcebos.com/v1/paddledet/models/pipeline/pp_lite_stdc2_bdd100k.zip
+# Descomprimir y apuntar model_dir a la carpeta del inference model.
+#
+# Activar:
+#   SCENE_PIPELINE_CONFIG=/opt/paddlex/pipelines/scene_lane.yaml
+#   SCENE_LABEL_MODE=lane
+#   ENABLE_SCENE_SEG=true
+#
+# Clases: 0 background, 1 double_yellow, 2 solid, 3 dashed
+
+pipeline_name: semantic_segmentation
+
+SubModules:
+  SemanticSegmentation:
+    module_name: semantic_segmentation
+    model_name: PP-LiteSeg-T
+    # Reemplazar null por ruta a pesos lane-seg (volumen o COPY en imagen).
+    model_dir: null

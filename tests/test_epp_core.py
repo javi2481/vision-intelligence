@@ -110,5 +110,95 @@ class ConsolidateAndEmitObjectTrackTests(unittest.TestCase):
         self.assertEqual(events[0].payload.class_name, "dog")
 
 
+class ConsolidateAndEmitFaceAndSceneTests(unittest.TestCase):
+    def test_face_track(self) -> None:
+        events = PerceptionEvent.consolidate_and_emit(
+            [
+                {
+                    "track_id": "f-1",
+                    "label": "face",
+                    "score": 0.92,
+                    "bbox": [1, 2, 3, 4],
+                    "entity_type": "face",
+                    "frame_ts": "2026-07-18T15:00:00Z",
+                }
+            ]
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].entity_type, "face")
+        self.assertEqual(events[0].payload.class_name, "face")
+
+    def test_scene_track(self) -> None:
+        events = PerceptionEvent.consolidate_and_emit(
+            [
+                {
+                    "track_id": "scene-0",
+                    "label": "street",
+                    "score": 0.7,
+                    "bbox": [0, 0, 100, 80],
+                    "entity_type": "scene",
+                    "scene": {
+                        "type": "street",
+                        "ratios": {"road": 0.3},
+                        "infra": {"has_road": True},
+                        "lanes": None,
+                        "crosswalk": None,
+                    },
+                    "frame_ts": "2026-07-18T15:00:00Z",
+                }
+            ]
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].entity_type, "scene")
+        self.assertEqual(events[0].payload.scene_type, "street")
+        self.assertEqual(events[0].payload.class_name, "street")
+        self.assertIn("scene:street", events[0].candidate_ids)
+
+    def test_person_with_attrs(self) -> None:
+        events = PerceptionEvent.consolidate_and_emit(
+            [
+                {
+                    "track_id": "o-9",
+                    "label": "person",
+                    "score": 0.88,
+                    "bbox": [1, 2, 3, 4],
+                    "entity_type": "object",
+                    "person": {"gender": "female", "age_group": "adult"},
+                    "frame_ts": "2026-07-18T15:00:00Z",
+                }
+            ]
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload.person["gender"], "female")
+
+    def test_pose_and_text_tracks(self) -> None:
+        events = PerceptionEvent.consolidate_and_emit(
+            [
+                {
+                    "track_id": "k-1",
+                    "label": "person_pose",
+                    "score": 0.8,
+                    "bbox": [1, 2, 3, 4],
+                    "entity_type": "pose",
+                    "keypoints": [[1, 2]],
+                    "frame_ts": "2026-07-18T15:00:00Z",
+                },
+                {
+                    "track_id": "t-0",
+                    "label": "text",
+                    "score": 0.9,
+                    "bbox": [1, 2, 3, 4],
+                    "entity_type": "text",
+                    "text": "STOP",
+                    "frame_ts": "2026-07-18T15:00:00Z",
+                },
+            ]
+        )
+        types = {e.entity_type for e in events}
+        self.assertEqual(types, {"pose", "text"})
+        text_ev = next(e for e in events if e.entity_type == "text")
+        self.assertEqual(text_ev.payload.text, "STOP")
+
+
 if __name__ == "__main__":
     unittest.main()

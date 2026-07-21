@@ -3,11 +3,13 @@
 #
 # Perfiles:
 #   (default)  paddlex + paddlex-objects + paddlex-ocr + adapter + bridge
+#   --profile extended → faces, pedestrians, scene, pose, face_id, signs
+#   --profile experimental → scene_cls, instances, small_objects, anomaly, open_vocab
 #   --profile demo   → bridge en DEMO_MODE (sin fotos/GPU)
 #   --profile rules  → JetLinks opcional
 #   --profile gpu    → PaddleX con runtime NVIDIA (requiere NVIDIA Container Toolkit)
 #
-# Layout de código: detection/{vehicles,objects,plates} + bridge + adapter + rules.
+# Layout: detection/{vehicles,objects,plates,faces,pedestrians,scene} + bridge + adapter.
 # Ver README.md (mapa carpeta ↔ capacidad ↔ servicio).
 
 name: vision-intelligence
@@ -65,6 +67,7 @@ services:
       - PYTHONUNBUFFERED=1
       - VI_PIPELINE=${OCR_PIPELINE_CONFIG:-/opt/paddlex/pipelines/ocr_v5_mobile.yaml}
       - VI_PORT=8081
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
     volumes:
       - paddlex-ocr-models:/root/.paddlex
     networks:
@@ -93,6 +96,7 @@ services:
       - PYTHONUNBUFFERED=1
       - VI_PIPELINE=object_detection
       - VI_PORT=8082
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
     volumes:
       - paddlex-objects-models:/root/.paddlex
     networks:
@@ -103,6 +107,295 @@ services:
       timeout: 10s
       retries: 20
       start_period: 300s
+    logging: *default-logging
+
+  paddlex-faces:
+    profiles: ["extended"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-faces:local
+    container_name: vi-paddlex-faces
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_FACES_PORT:-8083}:8083"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=face_detection
+      - VI_PORT=8083
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-faces-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8083/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
+  paddlex-pedestrians:
+    profiles: ["extended"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-pedestrians:local
+    container_name: vi-paddlex-pedestrians
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_PEDESTRIANS_PORT:-8084}:8084"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=pedestrian_attribute_recognition
+      - VI_PORT=8084
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-pedestrians-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8084/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
+  paddlex-scene:
+    profiles: ["extended"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-scene:local
+    container_name: vi-paddlex-scene
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_SCENE_PORT:-8085}:8085"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=${SCENE_PIPELINE_CONFIG:-semantic_segmentation}
+      - VI_PORT=8085
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-scene-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8085/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
+  paddlex-pose:
+    profiles: ["extended"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-pose:local
+    container_name: vi-paddlex-pose
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_POSE_PORT:-8086}:8086"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=human_keypoint_detection
+      - VI_PORT=8086
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-pose-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8086/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
+  paddlex-face-id:
+    profiles: ["extended"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-face-id:local
+    container_name: vi-paddlex-face-id
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_FACE_ID_PORT:-8087}:8087"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=face_recognition
+      - VI_PORT=8087
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-face-id-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8087/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
+  paddlex-signs:
+    profiles: ["extended"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-signs:local
+    container_name: vi-paddlex-signs
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_SIGNS_PORT:-8088}:8088"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=object_detection
+      - VI_PORT=8088
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-signs-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
+  paddlex-scene-cls:
+    profiles: ["experimental"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-scene-cls:local
+    container_name: vi-paddlex-scene-cls
+    restart: unless-stopped
+    ports:
+      - "8089:8089"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=image_classification
+      - VI_PORT=8089
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-scene-cls-models:/root/.paddlex
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  paddlex-instances:
+    profiles: ["experimental"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-instances:local
+    container_name: vi-paddlex-instances
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=instance_segmentation
+      - VI_PORT=8090
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-instances-models:/root/.paddlex
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  paddlex-small-objects:
+    profiles: ["experimental"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-small-objects:local
+    container_name: vi-paddlex-small-objects
+    restart: unless-stopped
+    ports:
+      - "8091:8091"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=small_object_detection
+      - VI_PORT=8091
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-small-objects-models:/root/.paddlex
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  paddlex-anomaly:
+    profiles: ["experimental"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-anomaly:local
+    container_name: vi-paddlex-anomaly
+    restart: unless-stopped
+    ports:
+      - "8092:8092"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=anomaly_detection
+      - VI_PORT=8092
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-anomaly-models:/root/.paddlex
+    networks:
+      - epp-network
+    logging: *default-logging
+
+  paddlex-open-vocab:
+    profiles: ["experimental"]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-open-vocab:local
+    container_name: vi-paddlex-open-vocab
+    restart: unless-stopped
+    ports:
+      - "8093:8093"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=open_vocabulary_detection
+      - VI_PORT=8093
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
+    volumes:
+      - paddlex-open-vocab-models:/root/.paddlex
+    networks:
+      - epp-network
     logging: *default-logging
 
   paddlex-gpu:
@@ -205,6 +498,38 @@ services:
       - OCR_EVERY_N_FRAMES=${OCR_EVERY_N_FRAMES:-5}
       - OCR_TOPK=${OCR_TOPK:-3}
       - OCR_HTTP_TIMEOUT=${OCR_HTTP_TIMEOUT:-5}
+      - PADDLEX_FACES_URL=${PADDLEX_FACES_URL:-http://paddlex-faces:8083}
+      - PADDLEX_FACES_PREDICT_PATH=${PADDLEX_FACES_PREDICT_PATH:-/face-detection}
+      - ENABLE_FACE_DETECTION=${ENABLE_FACE_DETECTION:-false}
+      - PADDLEX_PEDESTRIANS_URL=${PADDLEX_PEDESTRIANS_URL:-http://paddlex-pedestrians:8084}
+      - PADDLEX_PEDESTRIANS_PREDICT_PATH=${PADDLEX_PEDESTRIANS_PREDICT_PATH:-/pedestrian-attribute-recognition}
+      - ENABLE_PEDESTRIAN_ATTRS=${ENABLE_PEDESTRIAN_ATTRS:-false}
+      - PADDLEX_SCENE_URL=${PADDLEX_SCENE_URL:-http://paddlex-scene:8085}
+      - PADDLEX_SCENE_PREDICT_PATH=${PADDLEX_SCENE_PREDICT_PATH:-/semantic-segmentation}
+      - ENABLE_SCENE_SEG=${ENABLE_SCENE_SEG:-false}
+      - SCENE_LABEL_MODE=${SCENE_LABEL_MODE:-cityscapes}
+      - CROSSWALK_MIN_RATIO=${CROSSWALK_MIN_RATIO:-0.01}
+      - ENABLE_POSE=${ENABLE_POSE:-false}
+      - PADDLEX_POSE_URL=${PADDLEX_POSE_URL:-http://paddlex-pose:8086}
+      - ENABLE_SCENE_OCR=${ENABLE_SCENE_OCR:-false}
+      - SCENE_OCR_MIN_SCORE=${SCENE_OCR_MIN_SCORE:-0.5}
+      - SCENE_OCR_MAX_LINES=${SCENE_OCR_MAX_LINES:-20}
+      - ENABLE_FACE_ID=${ENABLE_FACE_ID:-false}
+      - PADDLEX_FACE_ID_URL=${PADDLEX_FACE_ID_URL:-http://paddlex-face-id:8087}
+      - ENABLE_SIGNS=${ENABLE_SIGNS:-false}
+      - PADDLEX_SIGNS_URL=${PADDLEX_SIGNS_URL:-http://paddlex-signs:8088}
+      - SIGNS_LABELS=${SIGNS_LABELS:-}
+      - ENABLE_SCENE_CLS=${ENABLE_SCENE_CLS:-false}
+      - PADDLEX_SCENE_CLS_URL=${PADDLEX_SCENE_CLS_URL:-http://paddlex-scene-cls:8089}
+      - ENABLE_INSTANCE_SEG=${ENABLE_INSTANCE_SEG:-false}
+      - PADDLEX_INSTANCES_URL=${PADDLEX_INSTANCES_URL:-http://paddlex-instances:8090}
+      - ENABLE_SMALL_OBJECTS=${ENABLE_SMALL_OBJECTS:-false}
+      - PADDLEX_SMALL_OBJECTS_URL=${PADDLEX_SMALL_OBJECTS_URL:-http://paddlex-small-objects:8091}
+      - ENABLE_ANOMALY=${ENABLE_ANOMALY:-false}
+      - PADDLEX_ANOMALY_URL=${PADDLEX_ANOMALY_URL:-http://paddlex-anomaly:8092}
+      - ENABLE_OPEN_VOCAB=${ENABLE_OPEN_VOCAB:-false}
+      - PADDLEX_OPEN_VOCAB_URL=${PADDLEX_OPEN_VOCAB_URL:-http://paddlex-open-vocab:8093}
+      - OPEN_VOCAB_PROMPT=${OPEN_VOCAB_PROMPT:-person,car,traffic sign}
     volumes:
       - ./detection:/app/detection:ro
       - ./bridge:/app/bridge:ro
@@ -282,3 +607,25 @@ volumes:
     name: vi-paddlex-ocr-models
   paddlex-objects-models:
     name: vi-paddlex-objects-models
+  paddlex-faces-models:
+    name: vi-paddlex-faces-models
+  paddlex-pedestrians-models:
+    name: vi-paddlex-pedestrians-models
+  paddlex-scene-models:
+    name: vi-paddlex-scene-models
+  paddlex-pose-models:
+    name: vi-paddlex-pose-models
+  paddlex-face-id-models:
+    name: vi-paddlex-face-id-models
+  paddlex-signs-models:
+    name: vi-paddlex-signs-models
+  paddlex-scene-cls-models:
+    name: vi-paddlex-scene-cls-models
+  paddlex-instances-models:
+    name: vi-paddlex-instances-models
+  paddlex-small-objects-models:
+    name: vi-paddlex-small-objects-models
+  paddlex-anomaly-models:
+    name: vi-paddlex-anomaly-models
+  paddlex-open-vocab-models:
+    name: vi-paddlex-open-vocab-models

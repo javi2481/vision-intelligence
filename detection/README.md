@@ -2,34 +2,35 @@
 
 ## Para qué sirve
 
-Código cliente de las capacidades de IA: vehículos, objetos COCO y patentes OCR.
+Código cliente de las capacidades de IA (HTTP + normalize). Bridge orquesta.
 
 ## Cómo funciona
 
-El `bridge/` orquesta estas carpetas sobre cada foto. Cada subcarpeta habla con
-su servicio PaddleX y normaliza la respuesta a dicts que entiende el adapter.
-
 ```text
-bridge → vehicles (:8080) + objects (:8082) → merge → plates (:8081 opcional)
+bridge → vehicles + objects (+ ENABLE_* extended/experimental)
+       → merge → plates? → ingest
 ```
 
-## Entrada / salida
+## Capacidades
 
-- **Entrada:** JPEG (bytes) o frame OpenCV según el módulo.
-- **Salida:** listas de detecciones (`track_id`, `label`, `score`, `bbox`, …).
-
-## Servicio / deps
-
-Ver cada subcarpeta. Shared: `detection/common/` (tracker, geometry, preview).
-
-## Archivos clave
-
-| Carpeta | Capacidad |
-|---------|-----------|
-| [vehicles/](vehicles/) | Tipo/color de vehículo |
-| [objects/](objects/) | COCO (incluye `person`) |
-| [plates/](plates/) | OCR de patente |
-| [common/](common/) | Utilidades compartidas |
+| Carpeta | Capacidad | Profile / flag |
+|---------|-----------|----------------|
+| [vehicles/](vehicles/) | Tipo/color vehículo | default |
+| [objects/](objects/) | COCO (incl. person) | default |
+| [plates/](plates/) | OCR patente | `ENABLE_PLATE_OCR` |
+| [faces/](faces/) | Rostros | extended / `ENABLE_FACE_DETECTION` |
+| [pedestrians/](pedestrians/) | Attrs persona | extended / `ENABLE_PEDESTRIAN_ATTRS` |
+| [scene/](scene/) | Escena / lanes / crosswalk | extended / `ENABLE_SCENE_SEG` |
+| [pose/](pose/) | Keypoints | extended / `ENABLE_POSE` |
+| [text/](text/) | OCR carteles | `ENABLE_SCENE_OCR` (reusa ocr) |
+| [face_id/](face_id/) | Identidad facial | extended / `ENABLE_FACE_ID` |
+| [signs/](signs/) | Señales | extended / `ENABLE_SIGNS` |
+| [scene_cls/](scene_cls/) | Clasif. escena | experimental + GATE |
+| [instances/](instances/) | Instance seg | experimental + GATE |
+| [small_objects/](small_objects/) | Small objects | experimental + GATE |
+| [anomaly/](anomaly/) | Anomaly | experimental + GATE |
+| [open_vocab/](open_vocab/) | Open-vocab | experimental + GATE |
+| [common/](common/) | Tracker, geometry, preview | — |
 
 ## Qué no es
 

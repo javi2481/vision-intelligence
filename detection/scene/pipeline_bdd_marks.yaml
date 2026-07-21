@@ -1,0 +1,23 @@
+# Stub BDD lane marks (incl. crosswalk). Requiere fine-tune propio.
+#
+# Dataset: BDD100K lane marking (crosswalk, double_*, single_*, road_curb).
+# Entrenar con PaddleSeg / PaddleX semantic_segmentation tutorial y apuntar
+# model_dir a los pesos exportados.
+#
+# Activar:
+#   SCENE_PIPELINE_CONFIG=/opt/paddlex/pipelines/scene_bdd_marks.yaml
+#   SCENE_LABEL_MODE=bdd_marks
+#   ENABLE_SCENE_SEG=true
+#   CROSSWALK_MIN_RATIO=0.01
+#
+# trainIds esperados (BDD):
+#   0 crosswalk, 1 double_other, 2 double_white, 3 double_yellow,
+#   4 road_curb, 5 single_other, 6 single_white, 7 single_yellow, 8 background
+
+pipeline_name: semantic_segmentation
+
+SubModules:
+  SemanticSegmentation:
+    module_name: semantic_segmentation
+    model_name: PP-LiteSeg-T
+    model_dir: null

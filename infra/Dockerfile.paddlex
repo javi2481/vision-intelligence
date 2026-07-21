@@ -33,6 +33,8 @@ RUN chmod +x /entrypoint.paddlex.sh
 # mismatch). Solo lo usa el servicio paddlex-ocr via VI_PIPELINE; el servicio
 # paddlex (attr) no lo referencia y sigue con vehicle_attribute_recognition.
 COPY detection/plates/pipeline.yaml /opt/paddlex/pipelines/ocr_v5_mobile.yaml
+COPY detection/scene/pipeline_lane.yaml /opt/paddlex/pipelines/scene_lane.yaml
+COPY detection/scene/pipeline_bdd_marks.yaml /opt/paddlex/pipelines/scene_bdd_marks.yaml
 
 EXPOSE 8080
 

@@ -10,13 +10,15 @@ Sin lógica de reglas de negocio; solo normalización y consolidación de tracks
 Asumción del JSON de detección (por ítem)::
 
     {
-      \"track_id\": \"v-42\",         # o \"o-1\" para objects
-      \"label\": \"car\",             # vehicle_type o class_name COCO
+      \"track_id\": \"v-42\",         # o \"o-1\" / \"f-1\" / \"scene-0\"
+      \"label\": \"car\",             # vehicle_type, class_name COCO, face, scene_type
       \"score\": 0.91,
       \"bbox\": [x1, y1, x2, y2],
       \"color\": \"white\",           # opcional (vehicles)
       \"plate\": {\"text\": \"ABC123\", \"score\": 0.87},  # opcional
-      \"entity_type\": \"vehicle\",   # o \"object\"
+      \"entity_type\": \"vehicle\",   # vehicle | object | face | scene
+      \"person\": {...},             # opcional (attrs pedestrians sobre person)
+      \"scene\": {...},              # opcional (entity_type scene)
       \"frame_ts\": \"2026-07-18T15:00:00.123Z\"
     }
 
@@ -53,8 +55,7 @@ class VehiclePayload(BaseModel):
     """Payload tipado de la entidad consolidada (pistas, no veredictos).
 
     Nombre histórico ("Vehicle...") preservado para no romper referencias en
-    adapter/app.py y el dashboard; el field set ahora cubre también entidades
-    `entity_type="object"` (COCO, object_detection) vía `class_name`.
+    adapter/app.py y el dashboard; el field set cubre también object/face/scene.
     """
 
     color: Optional[str] = None
@@ -64,6 +65,12 @@ class VehiclePayload(BaseModel):
     plate_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     bbox: Optional[list[float]] = None
     speed_kmh: Optional[float] = None
+    person: Optional[dict[str, Any]] = None
+    scene_type: Optional[str] = None
+    scene: Optional[dict[str, Any]] = None
+    text: Optional[str] = None
+    identity: Optional[str] = None
+    keypoints: Optional[list[Any]] = None
 
 
 class PerceptionEvent(BaseModel):
@@ -158,6 +165,11 @@ def _normalize_detection(raw: dict[str, Any]) -> dict[str, Any]:
         # Default "vehicle" preserva compat con detecciones sintéticas de
         # bridge-demo (no traen entity_type).
         "entity_type": raw.get("entity_type") or "vehicle",
+        "person": raw.get("person") if isinstance(raw.get("person"), dict) else None,
+        "scene": raw.get("scene") if isinstance(raw.get("scene"), dict) else None,
+        "text": raw.get("text"),
+        "identity": raw.get("identity"),
+        "keypoints": raw.get("keypoints") if isinstance(raw.get("keypoints"), list) else None,
     }
 
 
@@ -237,15 +249,61 @@ def _emit_track(
         float(best["speed_kmh"]) if best.get("speed_kmh") is not None else None
     )
 
+    if entity_type == "face":
+        confidence = max(0.0, min(1.0, mean_score))
+        return cls(
+            schema_version="1.0-draft",
+            entity_type="face",
+            occurred_at=_parse_occurred_at(detections),
+            observed_at=observed_at,
+            confidence=confidence,
+            candidate_ids=[f"track:{track_id}"],
+            location=location,
+            payload=VehiclePayload(
+                class_name="face",
+                bbox=best.get("bbox"),
+            ),
+        )
+
+    if entity_type == "scene":
+        scene_blob = best.get("scene") if isinstance(best.get("scene"), dict) else {}
+        scene_type = (
+            (scene_blob or {}).get("type")
+            or best.get("label")
+            or "unknown"
+        )
+        confidence = max(0.0, min(1.0, mean_score))
+        return cls(
+            schema_version="1.0-draft",
+            entity_type="scene",
+            occurred_at=_parse_occurred_at(detections),
+            observed_at=observed_at,
+            confidence=confidence,
+            candidate_ids=[f"track:{track_id}", f"scene:{scene_type}"],
+            location=location,
+            payload=VehiclePayload(
+                class_name=str(scene_type),
+                scene_type=str(scene_type),
+                scene=dict(scene_blob) if scene_blob else None,
+                bbox=best.get("bbox"),
+            ),
+        )
+
     if entity_type == "object":
         class_name, _ = _weighted_vote(detections, "label", "score")
         confidence = max(0.0, min(1.0, mean_score))
         candidate_ids: list[str] = [f"track:{track_id}"]
+        person_attrs = None
+        for d in reversed(detections):
+            if isinstance(d.get("person"), dict) and d["person"]:
+                person_attrs = dict(d["person"])
+                break
 
         payload = VehiclePayload(
             class_name=class_name,
             bbox=best.get("bbox"),
             speed_kmh=speed_kmh,
+            person=person_attrs,
         )
 
         return cls(
@@ -257,6 +315,46 @@ def _emit_track(
             candidate_ids=candidate_ids,
             location=location,
             payload=payload,
+        )
+
+    # Tipos extendidos / experimentales: pose, text, face_id, sign, …
+    _GENERIC_TYPES = {
+        "pose",
+        "text",
+        "face_id",
+        "sign",
+        "scene_cls",
+        "instance",
+        "small_object",
+        "anomaly",
+        "open_vocab",
+    }
+    if entity_type in _GENERIC_TYPES:
+        class_name, _ = _weighted_vote(detections, "label", "score")
+        confidence = max(0.0, min(1.0, mean_score))
+        text_val = best.get("text")
+        identity_val = best.get("identity")
+        kps = best.get("keypoints") if isinstance(best.get("keypoints"), list) else None
+        cands = [f"track:{track_id}"]
+        if identity_val:
+            cands.insert(0, f"identity:{identity_val}")
+        if text_val:
+            cands.insert(0, f"text:{text_val}")
+        return cls(
+            schema_version="1.0-draft",
+            entity_type=str(entity_type),
+            occurred_at=_parse_occurred_at(detections),
+            observed_at=observed_at,
+            confidence=confidence,
+            candidate_ids=cands,
+            location=location,
+            payload=VehiclePayload(
+                class_name=class_name or str(entity_type),
+                bbox=best.get("bbox"),
+                text=str(text_val) if text_val else None,
+                identity=str(identity_val) if identity_val else None,
+                keypoints=kps,
+            ),
         )
 
     # entity_type == "vehicle": comportamiento sin cambios.

@@ -10,7 +10,8 @@ preview e ingest al adapter.
 ```text
 idle ←→ poll /media/current
          ↓ foto
-      imread → vehicles∥objects → merge → plates? → overlay → /ingest + /preview/frame
+      imread → vehicles∥objects∥faces?∥pedestrians?∥scene?
+            → merge → plates? → overlay → /ingest + /preview/frame
          ↓ clear
        idle
 ```
@@ -28,7 +29,7 @@ idle ←→ poll /media/current
 |------|--------|
 | Compose | `bridge` (y `bridge-demo`) |
 | Depende de | `adapter`, `paddlex*`, paquetes `detection/` |
-| Env | `ADAPTER_*`, `PADDLEX_*`, `ENABLE_PLATE_OCR`, `MEDIA_*` |
+| Env | `ADAPTER_*`, `PADDLEX_*`, `ENABLE_PLATE_OCR`, `ENABLE_FACE_DETECTION`, `ENABLE_PEDESTRIAN_ATTRS`, `ENABLE_SCENE_SEG`, `MEDIA_*` |
 
 ## Archivos clave
 
