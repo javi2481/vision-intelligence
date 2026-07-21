@@ -85,6 +85,17 @@ BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "960"))
 # Cada N frames inferidos se emite una línea de métricas (infer_ms/fps/dets).
 BRIDGE_METRICS_EVERY = int(os.getenv("BRIDGE_METRICS_EVERY", "30"))
 
+# --- Object detection COCO (servicio paddlex-objects, aditivo — ver docker-compose.yml) ---
+# Corre en paralelo al pipeline vehicle_attribute_recognition; su caída nunca
+# degrada el pipeline primario (mismo aislamiento que OCR, ver _infer_ocr).
+PADDLEX_OBJECTS_URL = os.getenv("PADDLEX_OBJECTS_URL", "http://paddlex-objects:8082")
+PADDLEX_OBJECTS_PREDICT_PATH = os.getenv(
+    "PADDLEX_OBJECTS_PREDICT_PATH", "/object-detection"
+)
+# COCO labels que el pipeline vehicle_attribute_recognition ya cubre con más
+# detalle (color/plate). Usado para deduplicar contra object_detection.
+_VEHICLE_COCO_LABELS = {"car", "truck", "bus", "motorcycle", "bicycle"}
+
 # --- OCR de patente (servicio paddlex-ocr, opcional — ver docker-compose.yml) ---
 PADDLEX_OCR_URL = os.getenv("PADDLEX_OCR_URL", "http://paddlex-ocr:8081")
 ENABLE_PLATE_OCR = os.getenv("ENABLE_PLATE_OCR", "false").strip().lower() in (
@@ -102,6 +113,26 @@ PLATE_REGEX = re.compile(r"^[A-Z0-9]{5,8}$")
 _OCR_MIN_CROP_PX = 8
 
 
+def _iou(a: list[float], b: list[float]) -> float:
+    """IoU standalone entre dos bboxes [x1,y1,x2,y2].
+
+    Extraído de IoUTracker para reuso fuera del tracker (ver
+    _merge_object_detections, dedupe vehicle/object detections).
+    """
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 class IoUTracker:
     """Tracker mínimo por IoU para asignar track_id estables entre frames."""
 
@@ -112,18 +143,7 @@ class IoUTracker:
 
     @staticmethod
     def _iou(a: list[float], b: list[float]) -> float:
-        ax1, ay1, ax2, ay2 = a
-        bx1, by1, bx2, by2 = b
-        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-        iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
-        inter = iw * ih
-        if inter <= 0:
-            return 0.0
-        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-        union = area_a + area_b - inter
-        return inter / union if union > 0 else 0.0
+        return _iou(a, b)
 
     def assign(self, boxes: list[list[float]]) -> list[str]:
         used: set[str] = set()
@@ -152,6 +172,7 @@ class IoUTracker:
 
 
 _tracker = IoUTracker(IOU_THRESHOLD)
+_object_tracker = IoUTracker(IOU_THRESHOLD)
 
 
 def _is_rtsp_source(source: str) -> bool:
@@ -490,16 +511,93 @@ def _normalize_paddlex_result(data: dict[str, Any]) -> list[dict[str, Any]]:
     for tid, m in zip(track_ids, meta):
         detections.append(
             {
-                "track_id": tid,
+                # Prefijo "v-": namespacing frente a object_detection ("o-"),
+                # evita colisión de track_id como key en adapter.py TrackBucket.
+                "track_id": f"v-{tid}",
                 "label": m["label"],
                 "score": m["score"],
                 "color": m["color"],
                 "bbox": m["bbox"],
                 "plate": None,  # completado por OCR en run_loop si ENABLE_PLATE_OCR
                 "frame_ts": now,
+                "entity_type": "vehicle",
             }
         )
     return detections
+
+
+def _normalize_object_detection_result(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Traduce respuesta object_detection (COCO, 80 clases) → dicts crudos.
+
+    Serving API PaddleX object_detection:
+      { "result": { "boxes": [ { "cls_id", "label", "score", "coordinate" } ] } }
+
+    A diferencia de `_normalize_paddlex_result`, NO asigna track_id (lo hace
+    el caller vía `_object_tracker`, ver `_run_detections`) ni agrega
+    `color`/`plate`: una sola label + score por box (sin `_parse_attr_labels`,
+    que asume vocabulario color/tipo de vehículo y mal-etiquetaría cualquier
+    clase COCO como "vehicle" vía su fallback).
+    """
+    result = data.get("result", data)
+    boxes: list[dict[str, Any]] = []
+    if isinstance(result, dict):
+        raw = result.get("boxes") or []
+        if isinstance(raw, list):
+            boxes = raw
+    elif isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict) and "boxes" in item:
+                boxes.extend(item.get("boxes") or [])
+
+    detections: list[dict[str, Any]] = []
+    for box in boxes:
+        if not isinstance(box, dict):
+            continue
+        coord = box.get("coordinate") or box.get("bbox")
+        if not coord or len(coord) < 4:
+            continue
+        bbox = [float(coord[0]), float(coord[1]), float(coord[2]), float(coord[3])]
+        label = box.get("label") or box.get("cls_name") or ""
+        score = float(box.get("score") or box.get("det_score") or 0.0)
+        detections.append(
+            {
+                "label": str(label),
+                "score": score,
+                "bbox": bbox,
+                "entity_type": "object",
+            }
+        )
+    return detections
+
+
+def _merge_object_detections(
+    vehicle_dets: list[dict[str, Any]],
+    object_dets: list[dict[str, Any]],
+    iou_threshold: float = 0.5,
+) -> list[dict[str, Any]]:
+    """
+    Dedupe: descarta detecciones de `object_dets` ya cubiertas por el pipeline
+    vehicle_attribute_recognition (mismo auto detectado dos veces).
+
+    Se descarta una entrada de `object_dets` solo si su label está en
+    `_VEHICLE_COCO_LABELS` Y su bbox solapa (IoU > `iou_threshold`) alguna
+    bbox de `vehicle_dets` — el pipeline vehicle gana esa caja (trae
+    color/plate). Labels no-vehículo (person, dog, ...) se conservan siempre,
+    sin importar el solapamiento.
+    """
+    if not object_dets:
+        return []
+    vehicle_boxes = [v["bbox"] for v in vehicle_dets if v.get("bbox")]
+    kept: list[dict[str, Any]] = []
+    for det in object_dets:
+        label = str(det.get("label") or "").strip().lower()
+        bbox = det.get("bbox")
+        if label in _VEHICLE_COCO_LABELS and bbox and vehicle_boxes:
+            if any(_iou(bbox, vb) > iou_threshold for vb in vehicle_boxes):
+                continue
+        kept.append(det)
+    return kept
 
 
 def _decode_paddlex_result_image(data: dict[str, Any]) -> Optional[bytes]:
@@ -582,6 +680,36 @@ async def _infer_paddlex(
     return _normalize_paddlex_result(data)
 
 
+async def _infer_object_detection(
+    client: httpx.AsyncClient, jpeg: bytes
+) -> Optional[list[dict[str, Any]]]:
+    """POST base64 a `{PADDLEX_OBJECTS_URL}{PADDLEX_OBJECTS_PREDICT_PATH}`.
+
+    Aislado del pipeline vehicle_attribute_recognition (mismo patrón que
+    `_infer_ocr`): cualquier excepción/timeout devuelve None sin llamar
+    `_notify_degraded` — object_detection es una capa secundaria/aditiva, su
+    caída nunca degrada el pipeline vehicle primario.
+    """
+    url = f"{PADDLEX_OBJECTS_URL.rstrip('/')}{PADDLEX_OBJECTS_PREDICT_PATH}"
+    b64 = base64.b64encode(jpeg).decode("ascii")
+    try:
+        resp = await client.post(
+            url, json={"image": b64}, timeout=HTTP_TIMEOUT
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.debug("Object detection infer error (isolated, sin degradar): %s", exc)
+        return None
+
+    if not isinstance(data, dict):
+        return []
+    if data.get("errorCode") not in (None, 0, "0"):
+        logger.debug("Object detection error: %s", data.get("errorMsg"))
+        return None
+    return _normalize_object_detection_result(data)
+
+
 async def _infer_ocr(
     client: httpx.AsyncClient, jpeg: bytes
 ) -> Optional[dict[str, Any]]:
@@ -658,27 +786,63 @@ async def _push_preview_frame(client: httpx.AsyncClient, jpeg: bytes) -> None:
 async def _run_detections(
     client: httpx.AsyncClient, frame_hires
 ) -> tuple[Optional[list[dict[str, Any]]], bool, Optional[bytes]]:
-    """Infiere+OCR. Devuelve (detections, degraded, preview_jpeg).
+    """Infiere vehicle_attribute_recognition + object_detection (COCO) + OCR.
 
-    `detections is None` = saltar frame (encode/PaddleX falló). `[]` = OK sin dets.
-    `preview_jpeg` = overlay inglés local sobre frame_hires (o None si encode falla).
+    Devuelve (detections, degraded, preview_jpeg).
+
+    `detections is None` = saltar frame (encode/PaddleX vehicle falló). `[]` =
+    OK sin dets. object_detection es aditivo/aislado (igual patrón que OCR):
+    su caída jamás degrada ni bloquea el frame — solo se pierde ese layer.
+    `preview_jpeg` = overlay inglés local sobre frame_hires (o None si encode
+    falla).
     """
     frame_infer, scale_x, scale_y = _maybe_resize_for_infer(frame_hires)
     jpeg = _encode_jpeg(frame_infer)
     if jpeg is None:
         return None, False, None
 
-    detections = await _infer_paddlex(client, jpeg)
-    if detections is None:
+    # Vehicle attr (primario) y object detection (aditivo) corren en paralelo:
+    # son independientes, ambos consultan el mismo jpeg.
+    vehicle_detections, object_raw = await asyncio.gather(
+        _infer_paddlex(client, jpeg),
+        _infer_object_detection(client, jpeg),
+    )
+    if vehicle_detections is None:
         await _notify_degraded(client)
         return None, True, None
 
-    _scale_detections(detections, scale_x, scale_y)
+    _scale_detections(vehicle_detections, scale_x, scale_y)
+
+    # === Object detection (COCO, aditivo) — track + dedupe contra vehicle ===
+    if object_raw:
+        object_boxes = [d["bbox"] for d in object_raw]
+        object_track_ids = _object_tracker.assign(object_boxes)
+        now = datetime.now(timezone.utc).isoformat()
+        object_detections = [
+            {
+                # Prefijo "o-": namespacing frente a vehicle ("v-"), evita
+                # colisión de track_id como key en adapter.py TrackBucket.
+                "track_id": f"o-{tid}",
+                "label": d["label"],
+                "score": d["score"],
+                "bbox": d["bbox"],
+                "entity_type": "object",
+                "frame_ts": now,
+            }
+            for tid, d in zip(object_track_ids, object_raw)
+        ]
+        _scale_detections(object_detections, scale_x, scale_y)
+        detections = vehicle_detections + _merge_object_detections(
+            vehicle_detections, object_detections
+        )
+    else:
+        detections = vehicle_detections
+    # ========================================================================
 
     # === OCR de patente (opcional; bbox ya en coords frame_hires) ===
-    if ENABLE_PLATE_OCR and detections:
+    if ENABLE_PLATE_OCR and vehicle_detections:
         eligible = sorted(
-            (d for d in detections if d.get("score", 0.0) > OCR_MIN_SCORE),
+            (d for d in vehicle_detections if d.get("score", 0.0) > OCR_MIN_SCORE),
             key=lambda d: d["score"],
             reverse=True,
         )[:OCR_TOPK]
@@ -706,8 +870,9 @@ async def _run_image_source(
     Heartbeat del mismo JPEG + poll de hot-swap. Retorna al cambiar
     la selección activa.
     """
-    global _tracker
+    global _tracker, _object_tracker
     _tracker = IoUTracker(IOU_THRESHOLD)
+    _object_tracker = IoUTracker(IOU_THRESHOLD)
 
     frame_hires = cv2.imread(path)
     if frame_hires is None:

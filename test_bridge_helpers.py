@@ -22,6 +22,8 @@ from rtsp_bridge import (
     _is_safe_media_name,
     _maybe_resize_for_infer,
     _media_type_by_extension,
+    _merge_object_detections,
+    _normalize_object_detection_result,
     _normalize_paddlex_result,
     _parse_attr_labels,
     _preview_box_color,
@@ -229,6 +231,96 @@ class PreviewBoxColorTests(unittest.TestCase):
         a = _preview_box_color({"label": "weird", "track_id": "1"})
         b = _preview_box_color({"label": "weird", "track_id": "2"})
         self.assertNotEqual(a, b)
+
+
+class NormalizeObjectDetectionResultTests(unittest.TestCase):
+    def test_single_label_box_parses_correctly(self) -> None:
+        data = {
+            "result": {
+                "boxes": [
+                    {
+                        "cls_id": 0,
+                        "label": "person",
+                        "score": 0.87,
+                        "coordinate": [10, 20, 50, 90],
+                    }
+                ]
+            }
+        }
+        dets = _normalize_object_detection_result(data)
+
+        self.assertEqual(len(dets), 1)
+        self.assertEqual(dets[0]["label"], "person")
+        self.assertAlmostEqual(dets[0]["score"], 0.87)
+        self.assertEqual(dets[0]["bbox"], [10.0, 20.0, 50.0, 90.0])
+        self.assertEqual(dets[0]["entity_type"], "object")
+        self.assertNotIn("color", dets[0])
+        self.assertNotIn("plate", dets[0])
+
+    def test_missing_boxes_returns_empty(self) -> None:
+        self.assertEqual(_normalize_object_detection_result({"result": {}}), [])
+
+
+class MergeObjectDetectionsTests(unittest.TestCase):
+    @staticmethod
+    def _vehicle_det(bbox: list[float]) -> dict:
+        return {
+            "track_id": "v-1",
+            "label": "sedan",
+            "score": 0.9,
+            "color": "white",
+            "bbox": bbox,
+            "plate": None,
+            "frame_ts": "now",
+            "entity_type": "vehicle",
+        }
+
+    @staticmethod
+    def _object_det(label: str, bbox: list[float], track_id: str = "o-1") -> dict:
+        return {
+            "track_id": track_id,
+            "label": label,
+            "score": 0.8,
+            "bbox": bbox,
+            "entity_type": "object",
+            "frame_ts": "now",
+        }
+
+    def test_dedupes_vehicle_class_high_iou(self) -> None:
+        vehicle = [self._vehicle_det([10.0, 10.0, 100.0, 100.0])]
+        obj = [self._object_det("car", [12.0, 12.0, 98.0, 98.0])]
+
+        merged = _merge_object_detections(vehicle, obj)
+
+        self.assertEqual(merged, [])
+
+    def test_keeps_non_vehicle_class_even_with_high_iou(self) -> None:
+        vehicle = [self._vehicle_det([10.0, 10.0, 100.0, 100.0])]
+        obj = [self._object_det("person", [12.0, 12.0, 98.0, 98.0])]
+
+        merged = _merge_object_detections(vehicle, obj)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["label"], "person")
+
+    def test_keeps_vehicle_class_with_low_iou(self) -> None:
+        vehicle = [self._vehicle_det([10.0, 10.0, 100.0, 100.0])]
+        obj = [self._object_det("car", [500.0, 500.0, 600.0, 600.0])]
+
+        merged = _merge_object_detections(vehicle, obj)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["label"], "car")
+
+    def test_empty_vehicle_list_keeps_all_object_detections(self) -> None:
+        obj = [
+            self._object_det("car", [1.0, 1.0, 5.0, 5.0]),
+            self._object_det("person", [10.0, 10.0, 20.0, 20.0], track_id="o-2"),
+        ]
+
+        merged = _merge_object_detections([], obj)
+
+        self.assertEqual(len(merged), 2)
 
 
 class DrawPreviewTests(unittest.TestCase):

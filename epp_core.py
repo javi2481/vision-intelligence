@@ -51,10 +51,16 @@ class Location(BaseModel):
 
 
 class VehiclePayload(BaseModel):
-    """Payload tipado del vehículo consolidado (pistas, no veredictos)."""
+    """Payload tipado de la entidad consolidada (pistas, no veredictos).
+
+    Nombre histórico ("Vehicle...") preservado para no romper referencias en
+    adapter.py y el dashboard; el field set ahora cubre también entidades
+    `entity_type="object"` (COCO, object_detection) vía `class_name`.
+    """
 
     color: Optional[str] = None
     vehicle_type: Optional[str] = None
+    class_name: Optional[str] = None
     plate_text: Optional[str] = None
     plate_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     bbox: Optional[list[float]] = None
@@ -150,6 +156,9 @@ def _normalize_detection(raw: dict[str, Any]) -> dict[str, Any]:
         "bbox": list(bbox) if bbox is not None else None,
         "speed_kmh": raw.get("speed_kmh") or raw.get("speed"),
         "frame_ts": frame_ts,
+        # Default "vehicle" preserva compat con detecciones sintéticas de
+        # bridge-demo (no traen entity_type).
+        "entity_type": raw.get("entity_type") or "vehicle",
     }
 
 
@@ -210,7 +219,48 @@ def _emit_track(
     observed_at: datetime,
     location: Optional[Location],
 ) -> Optional[PerceptionEvent]:
-    """Construye un PerceptionEvent a partir de las detecciones de un track."""
+    """Construye un PerceptionEvent a partir de las detecciones de un track.
+
+    `entity_type` se deriva de las detecciones del track (primera detección
+    no-nula; en la práctica todo un track comparte entity_type, ya que
+    vehicle y object_detection usan trackers e IDs con prefijo separados
+    "v-"/"o-" en rtsp_bridge.py). Para `entity_type == "object"` se vota
+    `class_name` (la label COCO) en vez de `color`/`plate_text`, y se omite
+    el boost de confianza por patente (concepto propio de vehículos).
+    """
+    entity_type = detections[0].get("entity_type") or "vehicle"
+
+    # bbox / speed del frame con mayor score (común a ambas ramas)
+    best = max(detections, key=lambda d: float(d.get("score") or 0.0))
+    det_scores = [float(d.get("score") or 0.0) for d in detections]
+    mean_score = sum(det_scores) / len(det_scores) if det_scores else 0.0
+    speed_kmh = (
+        float(best["speed_kmh"]) if best.get("speed_kmh") is not None else None
+    )
+
+    if entity_type == "object":
+        class_name, _ = _weighted_vote(detections, "label", "score")
+        confidence = max(0.0, min(1.0, mean_score))
+        candidate_ids: list[str] = [f"track:{track_id}"]
+
+        payload = VehiclePayload(
+            class_name=class_name,
+            bbox=best.get("bbox"),
+            speed_kmh=speed_kmh,
+        )
+
+        return cls(
+            schema_version="1.0-draft",
+            entity_type="object",
+            occurred_at=_parse_occurred_at(detections),
+            observed_at=observed_at,
+            confidence=confidence,
+            candidate_ids=candidate_ids,
+            location=location,
+            payload=payload,
+        )
+
+    # entity_type == "vehicle": comportamiento sin cambios.
     plate_text, plate_vote_conf = _weighted_vote(
         detections, "plate_text", "plate_score"
     )
@@ -229,11 +279,6 @@ def _emit_track(
     # vehicle_type: modo (mayor score acumulado por label)
     type_winner, _ = _weighted_vote(detections, "label", "score")
 
-    # bbox / speed del frame con mayor score
-    best = max(detections, key=lambda d: float(d.get("score") or 0.0))
-    det_scores = [float(d.get("score") or 0.0) for d in detections]
-    mean_score = sum(det_scores) / len(det_scores) if det_scores else 0.0
-
     # Confianza comparable: media de detección * peso de voto de patente
     # (si no hay patente, solo media de detección).
     if plate_text and plate_vote_conf > 0.0:
@@ -243,7 +288,7 @@ def _emit_track(
         confidence = max(0.0, min(1.0, mean_score))
         plate_confidence = None
 
-    candidate_ids: list[str] = [f"track:{track_id}"]
+    candidate_ids = [f"track:{track_id}"]
     if plate_text:
         candidate_ids.insert(0, f"patente:{plate_text}")
 
@@ -253,9 +298,7 @@ def _emit_track(
         plate_text=plate_text,
         plate_confidence=plate_confidence,
         bbox=best.get("bbox"),
-        speed_kmh=(
-            float(best["speed_kmh"]) if best.get("speed_kmh") is not None else None
-        ),
+        speed_kmh=speed_kmh,
     )
 
     return cls(

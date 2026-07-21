@@ -99,6 +99,39 @@ services:
       start_period: 300s
     logging: *default-logging
 
+  # Object detection general (COCO, 80 clases): misma imagen Dockerfile.paddlex,
+  # pipeline object_detection, puerto propio. Aditivo al pipeline vehicle attr
+  # (paddlex arriba) — corren ambos sobre cada foto y se mergean en el bridge
+  # (ver _run_detections/_merge_object_detections en rtsp_bridge.py). Caída de
+  # uno no afecta al otro.
+  paddlex-objects:
+    build:
+      context: .
+      dockerfile: Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+    image: vision-intelligence/paddlex-objects:local
+    container_name: vi-paddlex-objects
+    restart: unless-stopped
+    ports:
+      - "${PADDLEX_OBJECTS_PORT:-8082}:8082"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VI_PIPELINE=object_detection
+      - VI_PORT=8082
+    volumes:
+      # Cache de modelos object_detection independiente del cache de attr/OCR
+      - paddlex-objects-models:/root/.paddlex
+    networks:
+      - epp-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8082/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    logging: *default-logging
+
   # Variante GPU (activar: docker compose --profile gpu up --build)
   paddlex-gpu:
     profiles: ["gpu"]
@@ -205,6 +238,8 @@ services:
       - BACKOFF_MAX=${BACKOFF_MAX:-30}
       - HTTP_TIMEOUT=${HTTP_TIMEOUT:-30}
       - PADDLEX_OCR_URL=${PADDLEX_OCR_URL:-http://paddlex-ocr:8081}
+      - PADDLEX_OBJECTS_URL=${PADDLEX_OBJECTS_URL:-http://paddlex-objects:8082}
+      - PADDLEX_OBJECTS_PREDICT_PATH=${PADDLEX_OBJECTS_PREDICT_PATH:-/object-detection}
       - ENABLE_PLATE_OCR=${ENABLE_PLATE_OCR:-false}
       - OCR_MIN_SCORE=${OCR_MIN_SCORE:-0.7}
       - OCR_EVERY_N_FRAMES=${OCR_EVERY_N_FRAMES:-5}
@@ -289,3 +324,5 @@ volumes:
     name: vi-paddlex-models
   paddlex-ocr-models:
     name: vi-paddlex-ocr-models
+  paddlex-objects-models:
+    name: vi-paddlex-objects-models
