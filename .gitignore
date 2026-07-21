@@ -11,3 +11,6 @@ venv/
 
 # Muestras locales de imagen (overlay-preview) — pesadas, no versionar.
 imagenes_muestra/
+
+# Skill registry local (rutas de máquina del desarrollador).
+.atl/

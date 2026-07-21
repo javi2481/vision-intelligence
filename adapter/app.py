@@ -273,8 +273,11 @@ def _append_to_track(track_id: str, detection: dict[str, Any]) -> None:
     bucket.last_seen = time.monotonic()
 
 
-def _emit_track(track_id: str) -> list[PerceptionEvent]:
-    """Consolida un track y lo saca del caché."""
+def _flush_track(track_id: str) -> list[PerceptionEvent]:
+    """Saca un track del caché y pide a epp_core que construya PerceptionEvent(s).
+
+    No confundir con `epp_core._emit_track`, que arma el payload por entity_type.
+    """
     bucket = track_cache.pop(track_id, None)
     if bucket is None or not bucket.detections:
         return []
@@ -336,7 +339,7 @@ async def _sweep_expired_tracks() -> None:
         if bucket.finalized or (now - bucket.last_seen) >= TRACK_TTL_SECONDS
     ]
     for tid in expired:
-        events = _emit_track(tid)
+        events = _flush_track(tid)
         await _forward_to_jetlinks(events)
 
 
@@ -413,10 +416,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+# Spec: allow_origins=["*"] no puede ir con allow_credentials=True (browsers rechazan).
+_cors_credentials = _cors_origins != ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -439,7 +445,12 @@ async def health() -> dict[str, Any]:
 async def ingest(request: Request) -> JSONResponse:
     """
     Recibe detecciones JSON de PaddleX (vía bridge) y las agrega al track_cache.
-    No emite PerceptionEvent aquí: el sweeper TTL consolida al expirar el track.
+
+    Emisión (dos caminos, ambos pasan por `_sweep_expired_tracks` → `_flush_track`):
+    - Foto activa (`_current_media`): marca todos los tracks finalized y barre al
+      instante (sin esperar TRACK_TTL). Es el camino del modo foto-only actual.
+    - Sin foto / video futuro: el loop `_sweeper_loop` emite cuando expira el TTL
+      o cuando una det marca `finalized`/`track_lost`. No es código muerto.
     """
     try:
         body = await request.json()

@@ -41,6 +41,12 @@ docker compose --profile gpu up --build
 ```
 
 Usar `PADDLE_GPU_BASE_IMAGE` y, si aplica, backends `trt_fp16` vía config HPI.
+El entrypoint exige `nvidia-smi` usable cuando `VI_DEVICE=gpu`; si no hay GPU/runtime, el contenedor falla al arrancar (en vez de quedar “up” sin servir).
+
+### Límites de RAM (compose)
+
+Ver README raíz (§ RAM del host). Anchors `x-limits-default` (8 GB / default) y
+`x-limits-extended` (32 GB / extended+experimental).
 
 ### Modelos lite (CPU)
 
