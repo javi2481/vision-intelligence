@@ -5,7 +5,6 @@ Opcional (ENABLE_FACE_DETECTION). Caída aislada: no degrada el bridge.
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
 from datetime import datetime, timezone
@@ -87,21 +86,17 @@ async def infer_faces(
     """POST JPEG a face-detection. None ante fallo (aislado)."""
     if not ENABLE_FACE_DETECTION:
         return None
-    url = f"{PADDLEX_FACES_URL.rstrip('/')}{PADDLEX_FACES_PREDICT_PATH}"
-    b64 = base64.b64encode(jpeg).decode("ascii")
-    try:
-        resp = await client.post(
-            url, json={"image": b64}, timeout=HTTP_TIMEOUT
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        logger.debug("Face detection infer error (isolated): %s", exc)
-        return None
+    from detection.common.paddlex_client import post_image_predict
 
-    if not isinstance(data, dict):
-        return []
-    if data.get("errorCode") not in (None, 0, "0"):
-        logger.debug("Face detection error: %s", data.get("errorMsg"))
+    data = await post_image_predict(
+        client,
+        base_url=PADDLEX_FACES_URL,
+        predict_path=PADDLEX_FACES_PREDICT_PATH,
+        jpeg=jpeg,
+        timeout=HTTP_TIMEOUT,
+        log=logger,
+        label="Face detection",
+    )
+    if data is None:
         return None
     return normalize_face_result(data)

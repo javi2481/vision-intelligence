@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
 from datetime import datetime, timezone
@@ -45,18 +44,17 @@ async def infer_anomaly(
 ) -> Optional[dict[str, Any]]:
     if not ENABLE_ANOMALY:
         return None
-    url = f"{PADDLEX_ANOMALY_URL.rstrip('/')}/anomaly-detection"
-    try:
-        resp = await client.post(
-            url,
-            json={"image": base64.b64encode(jpeg).decode("ascii")},
-            timeout=HTTP_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        logger.debug("Anomaly error (isolated): %s", exc)
-        return None
-    if not isinstance(data, dict) or data.get("errorCode") not in (None, 0, "0"):
+    from detection.common.paddlex_client import post_image_predict
+
+    data = await post_image_predict(
+        client,
+        base_url=PADDLEX_ANOMALY_URL,
+        predict_path="/anomaly-detection",
+        jpeg=jpeg,
+        timeout=HTTP_TIMEOUT,
+        log=logger,
+        label="Anomaly",
+    )
+    if data is None:
         return None
     return normalize_anomaly_result(data)

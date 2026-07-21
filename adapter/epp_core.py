@@ -316,15 +316,11 @@ def _parse_occurred_at(detections: list[dict[str, Any]]) -> datetime:
     return latest or _utc_now()
 
 
-def _emit_track(
-    cls: type[PerceptionEvent],
-    track_id: str,
+def _track_context(
     detections: list[dict[str, Any]],
     observed_at: datetime,
     location: Optional[Location],
-) -> Optional[PerceptionEvent]:
-    entity_type = detections[0].get("entity_type") or "vehicle"
-
+) -> tuple[dict[str, Any], dict[str, Any], float, Optional[float]]:
     best = max(detections, key=lambda d: float(d.get("score") or 0.0))
     det_scores = [float(d.get("score") or 0.0) for d in detections]
     mean_score = sum(det_scores) / len(det_scores) if det_scores else 0.0
@@ -337,142 +333,154 @@ def _emit_track(
         observed_at=observed_at,
         location=location,
     )
+    return common, best, mean_score, speed_kmh
 
-    if entity_type == "face":
-        return cls(
-            **common,
-            entity_type="face",
-            confidence=max(0.0, min(1.0, mean_score)),
-            candidate_ids=[f"track:{track_id}"],
-            payload=FacePayload(class_name="face", bbox=best.get("bbox")),
-        )
 
-    if entity_type == "scene":
-        scene_blob = best.get("scene") if isinstance(best.get("scene"), dict) else {}
-        scene_type = (
-            (scene_blob or {}).get("type") or best.get("label") or "unknown"
-        )
-        return cls(
-            **common,
-            entity_type="scene",
-            confidence=max(0.0, min(1.0, mean_score)),
-            candidate_ids=[f"track:{track_id}", f"scene:{scene_type}"],
-            payload=ScenePayload(
-                class_name=str(scene_type),
-                scene_type=str(scene_type),
-                scene=dict(scene_blob) if scene_blob else None,
-                bbox=best.get("bbox"),
-            ),
-        )
+def _consolidate_face(cls, track_id, detections, observed_at, location):
+    common, best, mean_score, _ = _track_context(detections, observed_at, location)
+    return cls(
+        **common,
+        entity_type="face",
+        confidence=max(0.0, min(1.0, mean_score)),
+        candidate_ids=[f"track:{track_id}"],
+        payload=FacePayload(class_name="face", bbox=best.get("bbox")),
+    )
 
-    if entity_type == "object":
-        class_name, _ = _weighted_vote(detections, "label", "score")
-        person_attrs = None
-        for d in reversed(detections):
-            if isinstance(d.get("person"), dict) and d["person"]:
-                person_attrs = dict(d["person"])
-                break
-        return cls(
-            **common,
-            entity_type="object",
-            confidence=max(0.0, min(1.0, mean_score)),
-            candidate_ids=[f"track:{track_id}"],
-            payload=ObjectPayload(
-                class_name=class_name,
-                bbox=best.get("bbox"),
-                speed_kmh=speed_kmh,
-                person=person_attrs,
-            ),
-        )
 
-    if entity_type == "pose":
-        class_name, _ = _weighted_vote(detections, "label", "score")
-        kps = best.get("keypoints") if isinstance(best.get("keypoints"), list) else None
-        return cls(
-            **common,
-            entity_type="pose",
-            confidence=max(0.0, min(1.0, mean_score)),
-            candidate_ids=[f"track:{track_id}"],
-            payload=PosePayload(
-                class_name=class_name or "pose",
-                bbox=best.get("bbox"),
-                keypoints=kps,
-            ),
-        )
+def _consolidate_scene(cls, track_id, detections, observed_at, location):
+    common, best, mean_score, _ = _track_context(detections, observed_at, location)
+    scene_blob = best.get("scene") if isinstance(best.get("scene"), dict) else {}
+    scene_type = (scene_blob or {}).get("type") or best.get("label") or "unknown"
+    return cls(
+        **common,
+        entity_type="scene",
+        confidence=max(0.0, min(1.0, mean_score)),
+        candidate_ids=[f"track:{track_id}", f"scene:{scene_type}"],
+        payload=ScenePayload(
+            class_name=str(scene_type),
+            scene_type=str(scene_type),
+            scene=dict(scene_blob) if scene_blob else None,
+            bbox=best.get("bbox"),
+        ),
+    )
 
-    if entity_type == "text":
-        class_name, _ = _weighted_vote(detections, "label", "score")
-        text_val = best.get("text")
-        cands = [f"track:{track_id}"]
-        if text_val:
-            cands.insert(0, f"text:{text_val}")
-        return cls(
-            **common,
-            entity_type="text",
-            confidence=max(0.0, min(1.0, mean_score)),
-            candidate_ids=cands,
-            payload=TextPayload(
-                class_name=class_name or "text",
-                bbox=best.get("bbox"),
-                text=str(text_val) if text_val else None,
-            ),
-        )
 
-    if entity_type == "face_id":
-        class_name, _ = _weighted_vote(detections, "label", "score")
-        identity_hash = pseudonymize_identity(
-            str(best["identity"]) if best.get("identity") else None
-        )
-        cands = [f"track:{track_id}"]
-        if identity_hash:
-            cands.insert(0, f"identity:{identity_hash}")
-        return cls(
-            **common,
-            entity_type="face_id",
-            confidence=max(0.0, min(1.0, mean_score)),
-            candidate_ids=cands,
-            payload=IdentityPayload(
-                class_name=class_name or "face_id",
-                bbox=best.get("bbox"),
-                identity=identity_hash,
-            ),
-        )
+def _consolidate_object(cls, track_id, detections, observed_at, location):
+    common, best, mean_score, speed_kmh = _track_context(
+        detections, observed_at, location
+    )
+    class_name, _ = _weighted_vote(detections, "label", "score")
+    person_attrs = None
+    for d in reversed(detections):
+        if isinstance(d.get("person"), dict) and d["person"]:
+            person_attrs = dict(d["person"])
+            break
+    return cls(
+        **common,
+        entity_type="object",
+        confidence=max(0.0, min(1.0, mean_score)),
+        candidate_ids=[f"track:{track_id}"],
+        payload=ObjectPayload(
+            class_name=class_name,
+            bbox=best.get("bbox"),
+            speed_kmh=speed_kmh,
+            person=person_attrs,
+        ),
+    )
 
-    _GENERIC_TYPES = {
-        "sign",
-        "scene_cls",
-        "instance",
-        "small_object",
-        "anomaly",
-        "open_vocab",
-    }
-    if entity_type in _GENERIC_TYPES:
-        class_name, _ = _weighted_vote(detections, "label", "score")
-        text_val = best.get("text")
-        identity_hash = pseudonymize_identity(
-            str(best["identity"]) if best.get("identity") else None
-        )
-        kps = best.get("keypoints") if isinstance(best.get("keypoints"), list) else None
-        cands = [f"track:{track_id}"]
-        if identity_hash:
-            cands.insert(0, f"identity:{identity_hash}")
-        if text_val:
-            cands.insert(0, f"text:{text_val}")
-        return cls(
-            **common,
-            entity_type=str(entity_type),
-            confidence=max(0.0, min(1.0, mean_score)),
-            candidate_ids=cands,
-            payload=GenericPayload(
-                class_name=class_name or str(entity_type),
-                bbox=best.get("bbox"),
-                text=str(text_val) if text_val else None,
-                identity=identity_hash,
-                keypoints=kps,
-            ),
-        )
 
-    # vehicle (default)
+def _consolidate_pose(cls, track_id, detections, observed_at, location):
+    common, best, mean_score, _ = _track_context(detections, observed_at, location)
+    class_name, _ = _weighted_vote(detections, "label", "score")
+    kps = best.get("keypoints") if isinstance(best.get("keypoints"), list) else None
+    return cls(
+        **common,
+        entity_type="pose",
+        confidence=max(0.0, min(1.0, mean_score)),
+        candidate_ids=[f"track:{track_id}"],
+        payload=PosePayload(
+            class_name=class_name or "pose",
+            bbox=best.get("bbox"),
+            keypoints=kps,
+        ),
+    )
+
+
+def _consolidate_text(cls, track_id, detections, observed_at, location):
+    common, best, mean_score, _ = _track_context(detections, observed_at, location)
+    class_name, _ = _weighted_vote(detections, "label", "score")
+    text_val = best.get("text")
+    cands = [f"track:{track_id}"]
+    if text_val:
+        cands.insert(0, f"text:{text_val}")
+    return cls(
+        **common,
+        entity_type="text",
+        confidence=max(0.0, min(1.0, mean_score)),
+        candidate_ids=cands,
+        payload=TextPayload(
+            class_name=class_name or "text",
+            bbox=best.get("bbox"),
+            text=str(text_val) if text_val else None,
+        ),
+    )
+
+
+def _consolidate_face_id(cls, track_id, detections, observed_at, location):
+    common, best, mean_score, _ = _track_context(detections, observed_at, location)
+    class_name, _ = _weighted_vote(detections, "label", "score")
+    identity_hash = pseudonymize_identity(
+        str(best["identity"]) if best.get("identity") else None
+    )
+    cands = [f"track:{track_id}"]
+    if identity_hash:
+        cands.insert(0, f"identity:{identity_hash}")
+    return cls(
+        **common,
+        entity_type="face_id",
+        confidence=max(0.0, min(1.0, mean_score)),
+        candidate_ids=cands,
+        payload=IdentityPayload(
+            class_name=class_name or "face_id",
+            bbox=best.get("bbox"),
+            identity=identity_hash,
+        ),
+    )
+
+
+def _consolidate_generic(cls, track_id, detections, observed_at, location):
+    entity_type = detections[0].get("entity_type") or "object"
+    common, best, mean_score, _ = _track_context(detections, observed_at, location)
+    class_name, _ = _weighted_vote(detections, "label", "score")
+    text_val = best.get("text")
+    identity_hash = pseudonymize_identity(
+        str(best["identity"]) if best.get("identity") else None
+    )
+    kps = best.get("keypoints") if isinstance(best.get("keypoints"), list) else None
+    cands = [f"track:{track_id}"]
+    if identity_hash:
+        cands.insert(0, f"identity:{identity_hash}")
+    if text_val:
+        cands.insert(0, f"text:{text_val}")
+    return cls(
+        **common,
+        entity_type=str(entity_type),
+        confidence=max(0.0, min(1.0, mean_score)),
+        candidate_ids=cands,
+        payload=GenericPayload(
+            class_name=class_name or str(entity_type),
+            bbox=best.get("bbox"),
+            text=str(text_val) if text_val else None,
+            identity=identity_hash,
+            keypoints=kps,
+        ),
+    )
+
+
+def _consolidate_vehicle(cls, track_id, detections, observed_at, location):
+    common, best, mean_score, speed_kmh = _track_context(
+        detections, observed_at, location
+    )
     plate_text, plate_vote_conf = _weighted_vote(
         detections, "plate_text", "plate_score"
     )
@@ -515,9 +523,40 @@ def _emit_track(
     )
 
 
+# Despacho por entity_type — agregar consolidator aquí al sumar una capacidad.
+CONSOLIDATORS: dict[str, Any] = {
+    "face": _consolidate_face,
+    "scene": _consolidate_scene,
+    "object": _consolidate_object,
+    "pose": _consolidate_pose,
+    "text": _consolidate_text,
+    "face_id": _consolidate_face_id,
+    "sign": _consolidate_generic,
+    "scene_cls": _consolidate_generic,
+    "instance": _consolidate_generic,
+    "small_object": _consolidate_generic,
+    "anomaly": _consolidate_generic,
+    "open_vocab": _consolidate_generic,
+    "vehicle": _consolidate_vehicle,
+}
+
+
+def _emit_track(
+    cls: type[PerceptionEvent],
+    track_id: str,
+    detections: list[dict[str, Any]],
+    observed_at: datetime,
+    location: Optional[Location],
+) -> Optional[PerceptionEvent]:
+    entity_type = detections[0].get("entity_type") or "vehicle"
+    consolidator = CONSOLIDATORS.get(entity_type, _consolidate_vehicle)
+    return consolidator(cls, track_id, detections, observed_at, location)
+
+
 # Re-export útiles para tests / docs de contrato
 __all__ = [
     "SCHEMA_VERSION",
+    "CONSOLIDATORS",
     "Location",
     "VehiclePayload",
     "ObjectPayload",
