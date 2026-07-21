@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY epp_core.py adapter.py amis_dashboard.json dashboard.html /app/
+COPY epp_core.py adapter.py amis_dashboard.json dashboard.html placeholder_preview.jpg /app/
 
 EXPOSE 8000
 

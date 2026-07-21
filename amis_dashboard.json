@@ -1,355 +1,218 @@
 {
   "type": "page",
-  "title": "Vision Intelligence — Panel",
+  "title": "Vision Intelligence",
   "name": "vision-dashboard",
+  "className": "vi-page",
   "toolbar": [
     {
       "type": "tpl",
-      "tpl": "<span class='label label-info'>epp-core 1.0-draft</span>"
-    },
-    {
-      "type": "button",
-      "label": "HLS crudo (MediaMTX, sin recuadros)",
-      "level": "link",
-      "actionType": "url",
-      "url": "${hlsUrl}",
-      "blank": true
+      "tpl": "<span class=\"vi-badge\">Detección en foto</span>"
     }
   ],
   "body": [
     {
       "type": "panel",
-      "title": "Fuente local (muestras)",
+      "title": "Foto analizada",
+      "className": "vi-panel-main",
       "body": [
         {
           "type": "tpl",
-          "className": "text-muted m-b-sm",
-          "tpl": "La vista de abajo es el <strong>preview anotado</strong> (con recuadros). El enlace HLS del toolbar es el stream <strong>crudo</strong> de MediaMTX (sin cajas). Para RTSP en vivo: limpiar selección y publicar con <code>publish_sample</code> o <code>inject_webcam</code>."
-        },
-        {
-          "type": "form",
-          "name": "mediaSelectForm",
-          "wrapWithPanel": false,
-          "api": {
-            "method": "post",
-            "url": "/media/select",
-            "adaptor": "return { status: (payload && payload.ok) ? 0 : 1, msg: (payload && payload.error) || '', data: payload };"
-          },
-          "body": [
-            {
-              "type": "select",
-              "name": "name",
-              "label": "Muestra activa",
-              "clearable": false,
-              "submitOnChange": true,
-              "source": {
-                "method": "get",
-                "url": "/media/list",
-                "adaptor": "var map={video:'video',image:'imagen'}; var items=(payload&&payload.items)||[]; return { status:0, data:{ options: items.map(function(i){ return { label: i.name+' ('+(map[i.type]||i.type)+')', value:i.name }; }) } };"
-              }
-            }
-          ]
-        },
-        {
-          "type": "button",
-          "label": "Limpiar selección (volver a RTSP vivo)",
-          "level": "default",
-          "size": "sm",
-          "className": "m-t-sm",
-          "actionType": "ajax",
-          "api": {
-            "method": "post",
-            "url": "/media/clear",
-            "adaptor": "return { status: (payload && payload.ok) ? 0 : 1, msg: '', data: payload };"
-          }
+          "className": "vi-preview text-center m-b",
+          "tpl": "<img src=\"/preview.mjpg\" alt=\"Preview con detecciones\" />"
         },
         {
           "type": "service",
           "name": "mediaCurrentService",
+          "id": "mediaCurrentService",
+          "className": "m-b-sm",
           "api": {
             "method": "get",
             "url": "/media/current",
-            "adaptor": "var map={video:'video',image:'imagen'}; var t=payload&&payload.type; return { status:0, data:{ name:payload&&payload.name, type: map[t]||t||'—', generation:payload&&payload.generation } };"
+            "adaptor": "return { status:0, data:{ name:payload&&payload.name, type: (payload&&payload.type)||'—', generation:payload&&payload.generation } };"
           },
-          "interval": 2000,
+          "interval": 2500,
+          "silentPolling": true,
           "body": {
             "type": "tpl",
-            "tpl": "<span>Fuente activa: <strong>${name|default:\"(ninguna seleccionada)\"}</strong> — tipo: <span class='label label-default'>${type|default:\"—\"}</span> — generación: ${generation|default:0}</span>"
+            "className": "vi-status",
+            "tpl": "<span class=\"vi-status-label\">${name ? \"Activa\" : \"Listo\"}</span> <strong>${name|default:\"Vision Intelligence\"}</strong> <span class=\"vi-muted\">${name ? (\"· gen \" + (generation || 0)) : \"· subí una foto para analizar\"}</span>"
           }
         },
         {
-          "type": "divider"
+          "type": "grid",
+          "columns": [
+            {
+              "md": 8,
+              "body": {
+                "type": "form",
+                "name": "mediaUploadForm",
+                "wrapWithPanel": false,
+                "mode": "inline",
+                "body": [
+                  {
+                    "type": "input-file",
+                    "name": "file",
+                    "label": false,
+                    "accept": ".jpg,.jpeg,.png,.bmp,image/jpeg,image/png,image/bmp",
+                    "receiver": "/media/upload",
+                    "useChunk": false,
+                    "autoUpload": true,
+                    "multiple": false,
+                    "drag": false,
+                    "btnLabel": "Subir foto",
+                    "btnClassName": "cxd-Button--primary",
+                    "className": "vi-upload",
+                    "description": false,
+                    "onEvent": {
+                      "success": {
+                        "actions": [
+                          {
+                            "actionType": "reload",
+                            "componentId": "detailService"
+                          },
+                          {
+                            "actionType": "reload",
+                            "componentId": "mediaCurrentService"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "md": 4,
+              "body": {
+                "type": "button",
+                "label": "Limpiar foto",
+                "level": "default",
+                "size": "sm",
+                "block": true,
+                "actionType": "ajax",
+                "api": {
+                  "method": "post",
+                  "url": "/media/clear",
+                  "adaptor": "return { status: (payload && payload.ok) ? 0 : 1, msg: (payload && payload.ok) ? 'Listo — Vision Intelligence' : 'No se pudo limpiar', data: payload };"
+                },
+                "reload": "mediaCurrentService,detailService"
+              }
+            }
+          ]
         },
         {
           "type": "tpl",
-          "className": "text-center",
-          "tpl": "<img src=\"/preview.mjpg\" style=\"max-width:100%;max-height:480px;border:1px solid #ddd;background:#000;\" onerror=\"this.onerror=null;this.src='/preview.jpg?ts='+Date.now();\" alt=\"Vista previa anotada\" />"
+          "className": "vi-hint m-t-sm",
+          "tpl": "También podés copiar JPGs a <code>imagenes_muestra/</code> — se analiza la más nueva."
         }
       ]
     },
     {
-      "type": "divider"
-    },
-    {
       "type": "service",
-      "name": "eventsService",
+      "name": "detailService",
+      "id": "detailService",
+      "className": "vi-detail",
       "api": {
         "method": "get",
-        "url": "/events?limit=200",
-        "adaptor": "return { ...payload, data: { count: payload.count, total_emitted: payload.total_emitted, tracks_active: payload.tracks_active, degraded: payload.degraded, events: payload.events || [], items: payload.events || [] } };"
+        "url": "/events?limit=100",
+        "adaptor": "var TYPE={vehicle:'Vehículo',car:'Auto',sedan:'Sedán',suv:'SUV',van:'Furgoneta',truck:'Camión',bus:'Colectivo',mpv:'Monovolumen',pickup:'Pickup',hatchback:'Hatchback',unknown:'Desconocido'}; var COLOR={red:'Rojo',blue:'Azul',green:'Verde',yellow:'Amarillo',white:'Blanco',black:'Negro',brown:'Marrón',silver:'Plateado',grey:'Gris',gray:'Gris',orange:'Naranja',purple:'Violeta',gold:'Dorado',golden:'Dorado'}; var events=(payload&&payload.events)||[]; var counts={}; var rows=events.map(function(e,i){ var rawT=(e.payload&&e.payload.vehicle_type)||'unknown'; var rawC=(e.payload&&e.payload.color)||null; var tipo=TYPE[rawT]||rawT; var color=rawC?(COLOR[rawC]||rawC):'—'; counts[tipo]=(counts[tipo]||0)+1; var conf=e.confidence||0; return { n:i+1, tipo:tipo, color:color, conf:Math.round(conf*100), conf_label:(conf*100).toFixed(0)+'%', conf_level: conf>0.85?'alta':(conf>0.6?'media':'baja') }; }); var keys=Object.keys(counts); var pieData=keys.map(function(k){ return { name:k, value:counts[k] }; }); return { status:0, data:{ count:rows.length, degraded:!!(payload&&payload.degraded), empty:rows.length===0, rows:rows, pieData:pieData, chartConfig:{ color:['#0b6bcb','#e85d04','#2a9d8f','#9b5de5','#ef476f','#118ab2','#ffb703'], title:{ text:'Tipos en esta foto', left:'center', top:8, textStyle:{ fontSize:15, fontWeight:600, color:'#1a1f24' } }, tooltip:{ trigger:'item', formatter:'{b}: {c} ({d}%)' }, legend:{ bottom:4, type:'scroll' }, series:[{ type:'pie', radius:['40%','66%'], center:['50%','52%'], avoidLabelOverlap:true, itemStyle:{ borderRadius:8, borderColor:'#fff', borderWidth:2 }, label:{ formatter:'{b}\\n{d}%', fontSize:11 }, data:pieData }] } } };"
       },
-      "interval": 2000,
+      "interval": 4000,
+      "silentPolling": true,
+      "showErrorMsg": false,
       "body": [
         {
-          "type": "grid",
-          "columns": [
+          "type": "panel",
+          "title": "Detalle de la detección",
+          "className": "vi-panel-detail",
+          "body": [
             {
-              "md": 2,
-              "body": {
-                "type": "card",
-                "header": { "title": "Eventos consolidados" },
-                "body": {
-                  "type": "tpl",
-                  "className": "text-xl font-bold",
-                  "tpl": "${total_emitted|default:0}"
-                }
-              }
+              "type": "tpl",
+              "visibleOn": "${empty}",
+              "className": "vi-empty",
+              "tpl": "<div class=\"vi-empty-card\"><strong>Sin detecciones todavía</strong><p>Subí una foto o esperá un momento a que termine el análisis.</p></div>"
             },
             {
-              "md": 2,
-              "body": {
-                "type": "card",
-                "header": { "title": "En cola" },
-                "body": {
-                  "type": "tpl",
-                  "className": "text-xl font-bold",
-                  "tpl": "${count|default:0}"
-                }
-              }
-            },
-            {
-              "md": 2,
-              "body": {
-                "type": "card",
-                "header": { "title": "Seguimientos activos" },
-                "body": {
-                  "type": "tpl",
-                  "className": "text-xl font-bold",
-                  "tpl": "${tracks_active|default:0}"
-                }
-              }
-            },
-            {
-              "md": 3,
-              "body": {
-                "type": "card",
-                "header": { "title": "Estado PaddleX" },
-                "body": {
-                  "type": "tpl",
-                  "tpl": "${degraded ? \"<span class='label label-warning'>Degradado</span>\" : \"<span class='label label-success'>Correcto</span>\"}"
-                }
-              }
-            },
-            {
-              "md": 3,
-              "body": {
-                "type": "service",
-                "name": "rulesHealthService",
-                "api": {
-                  "method": "get",
-                  "url": "/rules/health",
-                  "adaptor": "return { status: 0, data: { available: !!(payload && payload.available) } };"
-                },
-                "interval": 3000,
-                "body": {
-                  "type": "card",
-                  "header": { "title": "Estado reglas" },
+              "type": "grid",
+              "visibleOn": "${!empty}",
+              "columns": [
+                {
+                  "md": 4,
                   "body": {
                     "type": "tpl",
-                    "tpl": "${available ? \"<span class='label label-success'>Disponible</span>\" : \"<span class='label label-default'>No disponible</span>\"}"
+                    "className": "vi-stat-card",
+                    "tpl": "<div class=\"vi-stat\"><div class=\"vi-stat-value\">${count}</div><div class=\"vi-stat-label\">Detectados</div></div>"
+                  }
+                },
+                {
+                  "md": 4,
+                  "body": {
+                    "type": "tpl",
+                    "className": "vi-stat-card",
+                    "tpl": "<div class=\"vi-stat\"><div class=\"vi-stat-value vi-stat-ok\">${degraded ? \"Atención\" : \"OK\"}</div><div class=\"vi-stat-label\">Motor de visión</div></div>"
+                  }
+                },
+                {
+                  "md": 4,
+                  "body": {
+                    "type": "tpl",
+                    "className": "vi-stat-card",
+                    "tpl": "<div class=\"vi-stat\"><div class=\"vi-stat-value\">${pieData.length|default:0}</div><div class=\"vi-stat-label\">Tipos distintos</div></div>"
                   }
                 }
-              }
-            }
-          ]
-        },
-        {
-          "type": "grid",
-          "columns": [
+              ]
+            },
             {
-              "md": 4,
-              "body": {
-                "type": "card",
-                "header": { "title": "Última patente" },
-                "body": {
-                  "type": "tpl",
-                  "className": "text-xl font-bold",
-                  "tpl": "${events.0.payload.plate_text|default:\"—\"}"
+              "type": "grid",
+              "visibleOn": "${!empty}",
+              "className": "m-t",
+              "columns": [
+                {
+                  "md": 5,
+                  "body": {
+                    "type": "chart",
+                    "name": "typePie",
+                    "height": 300,
+                    "replaceChartOption": true,
+                    "config": "${chartConfig}"
+                  }
+                },
+                {
+                  "md": 7,
+                  "body": {
+                    "type": "table",
+                    "className": "vi-table",
+                    "source": "${rows}",
+                    "columnsTogglable": false,
+                    "footable": false,
+                    "columns": [
+                      {
+                        "name": "n",
+                        "label": "#",
+                        "width": 48
+                      },
+                      {
+                        "name": "tipo",
+                        "label": "Tipo",
+                        "type": "tpl",
+                        "tpl": "<span class=\"vi-pill vi-pill-type\">${tipo}</span>"
+                      },
+                      {
+                        "name": "color",
+                        "label": "Color",
+                        "type": "tpl",
+                        "tpl": "<span class=\"vi-pill vi-pill-color\">${color}</span>"
+                      },
+                      {
+                        "name": "conf_label",
+                        "label": "Confianza",
+                        "type": "tpl",
+                        "tpl": "<span class=\"vi-conf vi-conf-${conf_level}\">${conf_label}</span>"
+                      }
+                    ]
+                  }
                 }
-              }
-            }
-          ]
-        },
-        {
-          "type": "divider"
-        },
-        {
-          "type": "chart",
-          "name": "vehicleTypeChart",
-          "height": 280,
-          "api": {
-            "method": "get",
-            "url": "/events?limit=200",
-            "adaptor": "var es={vehicle:'vehiculo',car:'auto',sedan:'sedan',suv:'SUV',van:'furgoneta',truck:'camion',bus:'colectivo',mpv:'monovolumen',pickup:'pickup',unknown:'desconocido'}; var events=(payload&&payload.events)?payload.events:[]; var counts={}; events.forEach(function(e){ var t=(e.payload&&e.payload.vehicle_type)?e.payload.vehicle_type:'unknown'; t=es[t]||t; counts[t]=(counts[t]||0)+1; }); var keys=Object.keys(counts); return { data:{ title:{ text:'Distribucion por tipo de vehiculo', left:'center' }, tooltip:{ trigger:'item' }, series:[{ type:'pie', radius:'55%', data:keys.map(function(k){ return { name:k, value:counts[k] }; }) }] } };"
-          },
-          "interval": 2000,
-          "config": {
-            "title": { "text": "Distribucion por tipo de vehiculo", "left": "center" },
-            "tooltip": { "trigger": "item" },
-            "series": [
-              {
-                "type": "pie",
-                "radius": "55%",
-                "data": []
-              }
-            ]
-          }
-        },
-        {
-          "type": "chart",
-          "name": "eventsTimeline",
-          "height": 260,
-          "api": {
-            "method": "get",
-            "url": "/events?limit=200",
-            "adaptor": "var events = (payload && payload.events) ? payload.events : []; var buckets = {}; events.forEach(function(e){ var ts = e.observed_at || e.occurred_at; if(!ts) return; var d = new Date(ts); var key = d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'); buckets[key]=(buckets[key]||0)+1; }); var keys = Object.keys(buckets).sort(); return { data: { title: { text: 'Eventos por minuto (cola)', left: 'center' }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', data: keys }, yAxis: { type: 'value', minInterval: 1 }, series: [{ type: 'line', smooth: true, areaStyle: {}, data: keys.map(function(k){ return buckets[k]; }) }] } };"
-          },
-          "interval": 2000,
-          "config": {
-            "title": { "text": "Eventos por minuto (cola)", "left": "center" },
-            "tooltip": { "trigger": "axis" },
-            "xAxis": { "type": "category", "data": [] },
-            "yAxis": { "type": "value", "minInterval": 1 },
-            "series": [{ "type": "line", "smooth": true, "data": [] }]
-          }
-        },
-        {
-          "type": "divider"
-        },
-        {
-          "type": "service",
-          "name": "rulesAlertsService",
-          "api": {
-            "method": "get",
-            "url": "/rules/alerts",
-            "adaptor": "return { status: 0, data: { available: !!(payload && payload.available), count: (payload && payload.count) || 0, alerts: (payload && payload.alerts) || [] } };"
-          },
-          "interval": 3000,
-          "body": {
-            "type": "panel",
-            "title": "Alertas de reglas — ${count|default:0}",
-            "body": [
-              {
-                "type": "tpl",
-                "visibleOn": "this.available === false",
-                "className": "text-muted",
-                "tpl": "Motor de reglas no disponible (perfil \"rules\" apagado o relay caido)."
-              },
-              {
-                "type": "tpl",
-                "visibleOn": "this.available !== false && (!this.alerts || !this.alerts.length)",
-                "className": "text-muted",
-                "tpl": "Sin alertas. En demo: el adaptador solo reenvia si JETLINKS_WEBHOOK_URL apunta al sink de reglas."
-              },
-              {
-                "type": "list",
-                "visibleOn": "this.available !== false && this.alerts && this.alerts.length > 0",
-                "source": "${alerts}",
-                "listItem": {
-                  "title": "${plate_text|default:\"—\"}",
-                  "subTitle": "${reason} · ${ts}"
-                }
-              }
-            ]
-          }
-        },
-        {
-          "type": "divider"
-        },
-        {
-          "type": "crud",
-          "name": "eventsTable",
-          "syncLocation": true,
-          "initFetch": true,
-          "primaryField": "occurred_at",
-          "placeholder": "Sin eventos en la cola (¿el puente esta emitiendo?)",
-          "filter": {
-            "title": "Filtro de eventos",
-            "submitText": "Buscar",
-            "body": [
-              {
-                "type": "input-text",
-                "name": "plate",
-                "label": "Patente",
-                "clearable": true,
-                "placeholder": "Filtrar por patente… (vacio = todos)"
-              }
-            ]
-          },
-          "api": {
-            "method": "get",
-            "url": "/events?limit=200&plate=${plate}",
-            "adaptor": "var items = (payload && payload.events) ? payload.events : []; return { status: 0, data: { items: items, count: items.length, total_emitted: payload && payload.total_emitted } };"
-          },
-          "headerToolbar": [
-            {
-              "type": "tpl",
-              "tpl": "Mostrando <strong>${count|default:0}</strong> evento(s) en tabla"
-            },
-            "reload"
-          ],
-          "columns": [
-            {
-              "name": "payload.plate_text",
-              "label": "Patente",
-              "type": "tpl",
-              "tpl": "<span style='font-weight:bold;font-size:1.05em;'>${payload.plate_text|default:\"—\"}</span>"
-            },
-            {
-              "name": "entity_type",
-              "label": "Entidad",
-              "type": "tpl",
-              "tpl": "<% var m={vehicle:'vehiculo'}; %><%= m[data.entity_type] || data.entity_type || '—' %>"
-            },
-            {
-              "name": "candidate_ids",
-              "label": "Candidatos",
-              "type": "tpl",
-              "tpl": "${candidate_ids|join:', '}"
-            },
-            {
-              "name": "occurred_at",
-              "label": "Fecha/hora",
-              "type": "datetime",
-              "format": "YYYY-MM-DD HH:mm:ss"
-            },
-            {
-              "name": "confidence",
-              "label": "Confianza",
-              "type": "tpl",
-              "tpl": "<% var c = data.confidence || 0; var cls = c > 0.8 ? 'success' : (c > 0.5 ? 'warning' : 'danger'); %><span class='label label-<%= cls %>'><%= (c*100).toFixed(1) %>%</span>"
-            },
-            {
-              "name": "payload.vehicle_type",
-              "label": "Tipo",
-              "type": "tpl",
-              "tpl": "<% var m={vehicle:'vehiculo',car:'auto',sedan:'sedan',suv:'SUV',van:'furgoneta',truck:'camion',bus:'colectivo',mpv:'monovolumen',pickup:'pickup',unknown:'desconocido'}; var t=data.payload&&data.payload.vehicle_type; %><%= m[t]||t||'—' %>"
-            },
-            {
-              "name": "payload.color",
-              "label": "Color",
-              "type": "tpl",
-              "tpl": "<% var m={red:'rojo',blue:'azul',green:'verde',yellow:'amarillo',white:'blanco',black:'negro',brown:'marron',silver:'plateado',grey:'gris',gray:'gris',orange:'naranja',purple:'violeta',gold:'dorado'}; var c=data.payload&&data.payload.color; %><%= m[c]||c||'—' %>"
+              ]
             }
           ]
         }

@@ -52,6 +52,8 @@ services:
       - "${PADDLEX_PORT:-8080}:8080"
     environment:
       - PYTHONUNBUFFERED=1
+      # Tras benchmark HPIP ≥~1.5×: VI_USE_HPIP=1 (ver entrypoint.paddlex.sh)
+      - VI_USE_HPIP=${VI_USE_HPIP:-0}
     volumes:
       # Cache de modelos entre reinicios
       - paddlex-models:/root/.paddlex
@@ -149,6 +151,7 @@ services:
       - STATIC_DIR=/app
       - MEDIA_DIR=${MEDIA_DIR:-/media}
       - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
+      - MEDIA_WATCH_INTERVAL=${MEDIA_WATCH_INTERVAL:-1.0}
       - PREVIEW_MJPEG_INTERVAL=${PREVIEW_MJPEG_INTERVAL:-0.05}
     volumes:
       # Hot-reload en desarrollo
@@ -156,9 +159,9 @@ services:
       - ./adapter.py:/app/adapter.py
       - ./amis_dashboard.json:/app/amis_dashboard.json
       - ./dashboard.html:/app/dashboard.html
-      # Muestras locales (overlay-preview) — solo lectura, allow-list real.
-      - ./videos_muestra:/media/videos:ro
-      - ./imagenes_muestra:/media/images:ro
+      - ./placeholder_preview.jpg:/app/placeholder_preview.jpg:ro
+      # Fotos de muestra (preview + upload) — RW para POST /media/upload.
+      - ./imagenes_muestra:/media/images
     networks:
       - epp-network
     healthcheck:
@@ -194,12 +197,7 @@ services:
       - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
       - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
       - BRIDGE_FPS=${BRIDGE_FPS:-5}
-      - PREVIEW_FPS=${PREVIEW_FPS:-20}
-      - PREVIEW_ENCODE_MAX_WIDTH=${PREVIEW_ENCODE_MAX_WIDTH:-960}
-      - JPEG_QUALITY_PREVIEW=${JPEG_QUALITY_PREVIEW:-60}
       - BRIDGE_MAX_WIDTH=${BRIDGE_MAX_WIDTH:-960}
-      - OVERLAY_EXTRAPOLATE_MAX_SEC=${OVERLAY_EXTRAPOLATE_MAX_SEC:-2.5}
-      - OVERLAY_STALE_MAX_SEC=${OVERLAY_STALE_MAX_SEC:-3.0}
       - JPEG_QUALITY=${JPEG_QUALITY:-80}
       - DEMO_MODE=${DEMO_MODE:-0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -213,8 +211,7 @@ services:
       - OCR_TOPK=${OCR_TOPK:-3}
       - OCR_HTTP_TIMEOUT=${OCR_HTTP_TIMEOUT:-5}
     volumes:
-      # Muestras locales (overlay-preview) — mismo layout RO que adapter.
-      - ./videos_muestra:/media/videos:ro
+      # Fotos de muestra — mismo layout RO que adapter (sin videos_muestra).
       - ./imagenes_muestra:/media/images:ro
     networks:
       - epp-network

@@ -1,5 +1,5 @@
 """
-Puente resiliente: RTSP (MediaMTX) → PaddleX → Adapter.
+Puente resiliente: foto local o RTSP (MediaMTX) → PaddleX → Adapter.
 
 PaddleX 3.x: pipeline `vehicle_attribute_recognition`
   POST /vehicle-attribute-recognition  { "image": "<base64>" }
@@ -8,12 +8,17 @@ PP-Vehicle (PaddleDetection) no existe en PaddleX 3. Este pipeline detecta
 vehículos + atributos (color/tipo). No trae track_id: asignamos track_id con
 IoU tracker mínimo (orquestación, no modelo propio).
 
+Preview = overlay OpenCV local con etiquetas en inglés (tipo + color), sobre
+el frame original. No usamos `result.image` de PaddleX (trae chino bilingüe).
+
 OCR de patente (opcional, ENABLE_PLATE_OCR): tras escalar el bbox a coords
 frame_hires, recorta y consulta un segundo servicio PaddleX (pipeline OCR,
 `paddlex-ocr`) por detección elegible; merge en `d["plate"]`. Caída/timeout
 del OCR deja `plate=None` sin degradar el pipeline attr primario.
 
-Resiliencia: backoff RTSP, degradación si PaddleX cae, DEMO_MODE sin cámara.
+Resiliencia: backoff RTSP (interruptible si hay foto seleccionada), degradación
+si PaddleX cae, DEMO_MODE sin cámara. Muestras locales: solo imágenes bajo
+MEDIA_DIR/images (no video de muestra).
 """
 
 from __future__ import annotations
@@ -41,9 +46,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 RTSP_URL = os.getenv("RTSP_URL", "rtsp://mediamtx:8554/webcam")
-# SOURCE_URL generaliza el origen: RTSP (rtsp://...) o ruta local de archivo
-# bajo MEDIA_DIR. Sin setear, cae a RTSP_URL (compat total con el default
-# previo — BCS-1).
+# SOURCE_URL: RTSP vivo o ruta local de imagen. Sin setear → RTSP_URL.
+# No hay rama de video de muestra local (solo fotos en MEDIA_DIR/images).
 SOURCE_URL = os.getenv("SOURCE_URL") or RTSP_URL
 ADAPTER_INGEST_URL = os.getenv(
     "ADAPTER_INGEST_URL", "http://adapter:8000/ingest"
@@ -54,37 +58,22 @@ ADAPTER_MEDIA_CURRENT_URL = os.getenv(
 ADAPTER_PREVIEW_FRAME_URL = os.getenv(
     "ADAPTER_PREVIEW_FRAME_URL", "http://adapter:8000/preview/frame"
 )
-# Selector de muestra local (overlay-preview): mismo layout que adapter.py.
+# Selector de muestra local (solo fotos): mismo layout que adapter.py.
 MEDIA_DIR = os.getenv("MEDIA_DIR", "/media")
-MEDIA_VIDEO_SUBDIR = "videos"
 MEDIA_IMAGE_SUBDIR = "images"
 MEDIA_POLL_INTERVAL = float(os.getenv("MEDIA_POLL_INTERVAL", "1.0"))
-MEDIA_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
 MEDIA_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
-# Cada cuántos segundos se re-empuja el mismo frame anotado en modo foto
-# (single-shot) para mantener /preview.mjpg "vivo" en el adaptador (D5).
+# Re-empuje del JPEG nativo en modo foto (single-shot) para /preview.mjpg.
 PREVIEW_IMAGE_HEARTBEAT_SECONDS = float(
     os.getenv("PREVIEW_IMAGE_HEARTBEAT_SECONDS", "5.0")
 )
-# Overlay (FO-1): color BGR y fuente del bbox+label dibujado sobre frame_hires.
-OVERLAY_BOX_COLOR = (0, 255, 0)
-OVERLAY_FONT = cv2.FONT_HERSHEY_SIMPLEX
-OVERLAY_FONT_SCALE = 0.5
 PADDLEX_URL = os.getenv("PADDLEX_URL", "http://paddlex:8080")
 PADDLEX_PREDICT_PATH = os.getenv(
     "PADDLEX_PREDICT_PATH", "/vehicle-attribute-recognition"
 )
 FPS = float(os.getenv("BRIDGE_FPS", "5"))
 FRAME_INTERVAL = 1.0 / max(FPS, 0.1)
-# Preview fluido: ritmo de lectura/push al dashboard, independiente de la
-# inferencia. Los recuadros se dibujan sobre el frame ACTUAL (puede haber un
-# leve atraso vs la detección; no se reinyecta el frame viejo — eso entrecorta).
-PREVIEW_FPS = float(os.getenv("PREVIEW_FPS", "20"))
-PREVIEW_INTERVAL = 1.0 / max(PREVIEW_FPS, 0.1)
-# Ancho máx. del JPEG de preview (más chico = encode/red más fluido).
-PREVIEW_ENCODE_MAX_WIDTH = int(os.getenv("PREVIEW_ENCODE_MAX_WIDTH", "960"))
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "70"))
-JPEG_QUALITY_PREVIEW = int(os.getenv("JPEG_QUALITY_PREVIEW", "60"))
 DEMO_MODE = os.getenv("DEMO_MODE", "0") == "1"
 BACKOFF_INITIAL = float(os.getenv("BACKOFF_INITIAL", "1.0"))
 BACKOFF_MAX = float(os.getenv("BACKOFF_MAX", "30.0"))
@@ -95,13 +84,6 @@ IOU_THRESHOLD = float(os.getenv("TRACK_IOU_THRESHOLD", "0.3"))
 BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "960"))
 # Cada N frames inferidos se emite una línea de métricas (infer_ms/fps/dets).
 BRIDGE_METRICS_EVERY = int(os.getenv("BRIDGE_METRICS_EVERY", "30"))
-# Compensa el atraso del recuadro: proyecta bbox con velocidad del track
-# hasta el instante del frame actual (máx. segundos hacia adelante).
-# Default 2.5: PaddleX en CPU suele tardar 0.8–3s; 0.6 dejaba el bbox
-# ~2s atrás en videos_muestra (auto ya se fue, recuadro en asfalto).
-OVERLAY_EXTRAPOLATE_MAX_SEC = float(os.getenv("OVERLAY_EXTRAPOLATE_MAX_SEC", "2.5"))
-# Si la detección es más vieja que esto, no dibujar (evita fantasmas).
-OVERLAY_STALE_MAX_SEC = float(os.getenv("OVERLAY_STALE_MAX_SEC", "3.0"))
 
 # --- OCR de patente (servicio paddlex-ocr, opcional — ver docker-compose.yml) ---
 PADDLEX_OCR_URL = os.getenv("PADDLEX_OCR_URL", "http://paddlex-ocr:8081")
@@ -178,10 +160,8 @@ def _is_rtsp_source(source: str) -> bool:
 
 
 def _media_type_by_extension(filename: str) -> Optional[str]:
-    """Clasifica `filename` en 'video'/'image' por extensión; None si no matchea."""
+    """Clasifica `filename` como 'image' por extensión; None si no matchea."""
     ext = os.path.splitext(filename)[1].lower()
-    if ext in MEDIA_VIDEO_EXTENSIONS:
-        return "video"
     if ext in MEDIA_IMAGE_EXTENSIONS:
         return "image"
     return None
@@ -192,13 +172,11 @@ def _is_safe_media_name(name: str) -> bool:
     return bool(name) and os.path.basename(name) == name and name not in (".", "..")
 
 
-def _resolve_media_path(name: str, media_type: str) -> Optional[str]:
-    """Construye la ruta absoluta bajo MEDIA_DIR para una muestra ya validada
-    por el adapter. Vuelve a chequear traversal (defensa en profundidad)."""
+def _resolve_media_path(name: str) -> Optional[str]:
+    """Ruta absoluta bajo MEDIA_DIR/images para una muestra ya validada."""
     if not _is_safe_media_name(name):
         return None
-    subdir = MEDIA_VIDEO_SUBDIR if media_type == "video" else MEDIA_IMAGE_SUBDIR
-    return os.path.join(MEDIA_DIR, subdir, name)
+    return os.path.join(MEDIA_DIR, MEDIA_IMAGE_SUBDIR, name)
 
 
 def _resolve_active_source(
@@ -206,18 +184,28 @@ def _resolve_active_source(
 ) -> tuple[str, bool, bool]:
     """Decide la fuente activa: `(source, is_rtsp, is_image)`.
 
-    Si hay una muestra seleccionada (vía /media/select en el adapter), resuelve
-    su ruta local bajo MEDIA_DIR. Si no, cae a SOURCE_URL (RTSP o archivo local
-    directo) — comportamiento previo preservado cuando no hay selección.
+    Selector AMIS: solo fotos bajo MEDIA_DIR/images. Sin selección → SOURCE_URL
+    si es RTSP o imagen; si SOURCE_URL apunta a otra cosa, cae a RTSP_URL.
     """
     if selected and selected.get("name"):
-        media_type = selected.get("type") or "video"
-        path = _resolve_media_path(selected["name"], media_type)
-        if path is not None:
-            return path, False, media_type == "image"
-    is_rtsp = _is_rtsp_source(SOURCE_URL)
-    is_image = (not is_rtsp) and _media_type_by_extension(SOURCE_URL) == "image"
-    return SOURCE_URL, is_rtsp, is_image
+        media_type = selected.get("type") or "image"
+        if media_type == "image" or _media_type_by_extension(selected["name"]) == "image":
+            path = _resolve_media_path(selected["name"])
+            if path is not None:
+                return path, False, True
+        logger.warning(
+            "Selected media ignored (solo imagenes): name=%s type=%s",
+            selected.get("name"),
+            selected.get("type"),
+        )
+    if _is_rtsp_source(SOURCE_URL):
+        return SOURCE_URL, True, False
+    if _media_type_by_extension(SOURCE_URL) == "image":
+        return SOURCE_URL, False, True
+    logger.warning(
+        "SOURCE_URL no es RTSP ni imagen; fallback a RTSP_URL=%s", RTSP_URL
+    )
+    return RTSP_URL, True, False
 
 
 def _open_capture(source: str, is_rtsp: bool = True) -> cv2.VideoCapture:
@@ -238,22 +226,99 @@ def _encode_jpeg(frame, quality: Optional[int] = None) -> Optional[bytes]:
     return buf.tobytes()
 
 
-def _encode_preview_jpeg(frame) -> Optional[bytes]:
-    """JPEG liviano para el panel: downscale + calidad preview (fluidez)."""
-    h, w = frame.shape[:2]
-    if PREVIEW_ENCODE_MAX_WIDTH > 0 and w > PREVIEW_ENCODE_MAX_WIDTH:
-        new_w = PREVIEW_ENCODE_MAX_WIDTH
-        new_h = max(1, round(h * new_w / w))
-        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    return _encode_jpeg(frame, quality=JPEG_QUALITY_PREVIEW)
+def _preview_label(det: dict[str, Any]) -> str:
+    """Texto de etiqueta en inglés para el overlay (sin CJK)."""
+    parts: list[str] = []
+    label = det.get("label")
+    color = det.get("color")
+    if label:
+        parts.append(str(label))
+    if color:
+        parts.append(str(color))
+    return " ".join(parts) or "vehicle"
+
+
+# Paleta BGR distinta por tipo (OpenCV); fallback por track_id.
+_PREVIEW_TYPE_COLORS_BGR: dict[str, tuple[int, int, int]] = {
+    "sedan": (255, 160, 0),      # azul claro
+    "suv": (0, 140, 255),        # naranja
+    "van": (200, 0, 200),        # magenta
+    "truck": (0, 215, 255),      # amarillo
+    "bus": (0, 0, 255),          # rojo
+    "mpv": (255, 0, 128),        # rosa
+    "pickup": (0, 200, 120),     # verde agua
+    "hatchback": (180, 100, 0),  # azul oscuro
+    "car": (255, 160, 0),
+    "vehicle": (80, 80, 255),    # rojo suave
+}
+
+_PREVIEW_FALLBACK_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
+    (255, 160, 0),
+    (0, 140, 255),
+    (200, 0, 200),
+    (0, 215, 255),
+    (0, 0, 255),
+    (255, 0, 128),
+    (0, 200, 120),
+    (180, 100, 0),
+)
+
+
+def _preview_box_color(det: dict[str, Any]) -> tuple[int, int, int]:
+    """Color BGR estable por tipo de vehículo (o track_id si falta tipo)."""
+    label = str(det.get("label") or "").strip().lower()
+    if label in _PREVIEW_TYPE_COLORS_BGR:
+        return _PREVIEW_TYPE_COLORS_BGR[label]
+    tid = str(det.get("track_id") or "0")
+    digits = "".join(ch for ch in tid if ch.isdigit()) or "0"
+    idx = int(digits) % len(_PREVIEW_FALLBACK_PALETTE_BGR)
+    return _PREVIEW_FALLBACK_PALETTE_BGR[idx]
+
+
+def _draw_preview(frame, detections: list[dict[str, Any]]) -> Optional[bytes]:
+    """Dibuja bboxes + labels EN con color por tipo y fondo de etiqueta legible."""
+    canvas = frame.copy()
+    for det in detections or []:
+        bbox = det.get("bbox")
+        if not bbox or len(bbox) < 4:
+            continue
+        x1 = int(round(float(bbox[0])))
+        y1 = int(round(float(bbox[1])))
+        x2 = int(round(float(bbox[2])))
+        y2 = int(round(float(bbox[3])))
+        color = _preview_box_color(det)
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 3)
+
+        text = _preview_label(det)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.6
+        thickness = 2
+        (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
+        pad = 4
+        label_y1 = max(0, y1 - th - baseline - pad * 2)
+        label_y2 = max(th + baseline + pad * 2, y1)
+        label_x2 = min(canvas.shape[1] - 1, x1 + tw + pad * 2)
+        cv2.rectangle(
+            canvas, (x1, label_y1), (label_x2, label_y2), color, thickness=-1
+        )
+        cv2.putText(
+            canvas,
+            text,
+            (x1 + pad, label_y2 - baseline - pad),
+            font,
+            scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+    return _encode_jpeg(canvas)
 
 
 def _maybe_resize_for_infer(frame_hires) -> tuple[Any, float, float]:
     """Deriva frame_infer de frame_hires; downscale solo si excede BRIDGE_MAX_WIDTH.
 
-    frame_hires se mantiene intacto en todos los casos (para overlay/OCR futuro).
-    Retorna (frame_infer, scale_x, scale_y) donde scale_* multiplica coordenadas
-    infer -> hires; pass-through devuelve el mismo objeto sin copia y 1.0/1.0.
+    frame_hires se mantiene intacto (OCR/crop). Retorna (frame_infer, scale_x,
+    scale_y) donde scale_* multiplica coordenadas infer -> hires.
     """
     h, w = frame_hires.shape[:2]
     if w <= BRIDGE_MAX_WIDTH:
@@ -296,125 +361,6 @@ def _crop_bbox(frame, bbox: list[float]) -> Optional[Any]:
     if (x2 - x1) < _OCR_MIN_CROP_PX or (y2 - y1) < _OCR_MIN_CROP_PX:
         return None
     return frame[y1:y2, x1:x2]
-
-
-# Etiquetas visibles en overlay (español). Claves = valores crudos del modelo.
-_OVERLAY_LABEL_ES = {
-    "vehicle": "vehiculo",
-    "car": "auto",
-    "sedan": "sedan",
-    "suv": "SUV",
-    "van": "furgoneta",
-    "truck": "camion",
-    "bus": "colectivo",
-    "mpv": "monovolumen",
-    "pickup": "pickup",
-    "unknown": "desconocido",
-}
-
-
-def _overlay_type_es(raw: Any) -> str:
-    """Tipo para dibujar en el frame: español ASCII (OpenCV putText no rinde bien tildes)."""
-    key = re.sub(r"[\u4e00-\u9fff]+", "", str(raw or "vehicle"))
-    key = key.split("(")[0].strip().lower() or "vehicle"
-    return _OVERLAY_LABEL_ES.get(key, key)
-
-
-def _extrapolate_detections(
-    curr: list[dict[str, Any]],
-    curr_ts: float,
-    prev: Optional[list[dict[str, Any]]],
-    prev_ts: float,
-    now: float,
-    max_ahead: float = OVERLAY_EXTRAPOLATE_MAX_SEC,
-    stale_max: float = OVERLAY_STALE_MAX_SEC,
-) -> list[dict[str, Any]]:
-    """Proyecta bboxes al instante `now` usando velocidad constante por track_id.
-
-    `curr_ts` debe ser el timestamp del FOTOGRAMA inferido (no el de fin de
-    inferencia): si PaddleX tarda 0.4s, sin esto el recuadro ya nace atrasado.
-
-    Si `now - curr_ts` supera `stale_max`, devuelve [] (no dibujar fantasmas
-    sobre asfalto cuando el auto ya salió del frame).
-    """
-    if not curr:
-        return curr
-    dt_ahead = now - curr_ts
-    if dt_ahead > float(stale_max):
-        return []
-    if dt_ahead <= 0.001 or not prev or curr_ts <= prev_ts:
-        return curr
-    dt_hist = curr_ts - prev_ts
-    if dt_hist < 0.02:
-        return curr
-    dt_ahead = min(float(dt_ahead), float(max_ahead))
-    prev_by = {
-        str(d.get("track_id")): d
-        for d in prev
-        if d.get("track_id") is not None and d.get("bbox")
-    }
-    out: list[dict[str, Any]] = []
-    for d in curr:
-        nd = dict(d)
-        bbox = d.get("bbox")
-        p = prev_by.get(str(d.get("track_id")))
-        pb = p.get("bbox") if p else None
-        if (
-            bbox
-            and pb
-            and len(bbox) >= 4
-            and len(pb) >= 4
-        ):
-            pred = []
-            for i in range(4):
-                v = (float(bbox[i]) - float(pb[i])) / dt_hist
-                pred.append(float(bbox[i]) + v * dt_ahead)
-            nd["bbox"] = pred
-        out.append(nd)
-    return out
-
-
-def _draw_overlay(frame, dets: list[dict[str, Any]]):
-    """Dibuja bbox+label (tipo/patente/confianza) por detección sobre una copia
-    de `frame` (FO-1). Sin detecciones, devuelve `frame` sin tocar (no-op)."""
-    if not dets:
-        return frame
-
-    annotated = frame.copy()
-    h, w = annotated.shape[:2]
-    for d in dets:
-        bbox = d.get("bbox")
-        if not bbox or len(bbox) < 4:
-            continue
-        x1 = max(0, min(int(round(bbox[0])), w))
-        y1 = max(0, min(int(round(bbox[1])), h))
-        x2 = max(0, min(int(round(bbox[2])), w))
-        y2 = max(0, min(int(round(bbox[3])), h))
-        if x2 <= x1 or y2 <= y1:
-            continue
-
-        plate = d.get("plate")
-        plate_text = plate.get("text") if isinstance(plate, dict) else None
-        label = _overlay_type_es(d.get("label"))
-        if plate_text:
-            label += f" {plate_text}"
-        label += f" {float(d.get('score') or 0.0):.2f}"
-
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), OVERLAY_BOX_COLOR, 2)
-        (tw, th), _ = cv2.getTextSize(label, OVERLAY_FONT, OVERLAY_FONT_SCALE, 1)
-        ty1 = max(0, y1 - th - 6)
-        cv2.rectangle(annotated, (x1, ty1), (x1 + tw + 4, ty1 + th + 6), OVERLAY_BOX_COLOR, -1)
-        cv2.putText(
-            annotated,
-            label,
-            (x1 + 2, ty1 + th + 2),
-            OVERLAY_FONT,
-            OVERLAY_FONT_SCALE,
-            (0, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
-    return annotated
 
 
 def _parse_plate(
@@ -556,6 +502,28 @@ def _normalize_paddlex_result(data: dict[str, Any]) -> list[dict[str, Any]]:
     return detections
 
 
+def _decode_paddlex_result_image(data: dict[str, Any]) -> Optional[bytes]:
+    """Decodifica `result.image` (Base64) del serving PaddleX a bytes JPEG/PNG.
+
+    None si falta el campo o el decode falla — el caller no debe inventar overlay.
+    """
+    result = data.get("result", data)
+    if not isinstance(result, dict):
+        return None
+    image_b64 = result.get("image")
+    if not image_b64 or not isinstance(image_b64, str):
+        return None
+    payload = image_b64.strip()
+    if payload.startswith("data:") and "," in payload:
+        payload = payload.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except Exception as exc:
+        logger.warning("PaddleX result.image Base64 decode failed: %s", exc)
+        return None
+    return raw or None
+
+
 def _demo_detections() -> list[dict[str, Any]]:
     track_id = str(random.randint(1, 5))
     plates = ["ABC123", "ABC123", "ABG123", "XYZ789", "ABC123"]
@@ -589,7 +557,11 @@ async def _post_json(client: httpx.AsyncClient, url: str, payload: Any) -> bool:
 async def _infer_paddlex(
     client: httpx.AsyncClient, jpeg: bytes
 ) -> Optional[list[dict[str, Any]]]:
-    """POST base64 a /vehicle-attribute-recognition y normaliza a detecciones."""
+    """POST base64 a /vehicle-attribute-recognition → detecciones.
+
+    Ignora `result.image` (etiquetas bilingües con chino); el preview se dibuja
+    localmente en inglés sobre el frame original.
+    """
     url = f"{PADDLEX_URL.rstrip('/')}{PADDLEX_PREDICT_PATH}"
     b64 = base64.b64encode(jpeg).decode("ascii")
     try:
@@ -664,14 +636,13 @@ async def _fetch_current_media(client: httpx.AsyncClient) -> Optional[dict[str, 
         return None
     return {
         "name": data["name"],
-        "type": data.get("type") or "video",
+        "type": data.get("type") or "image",
         "generation": data.get("generation"),
     }
 
 
 async def _push_preview_frame(client: httpx.AsyncClient, jpeg: bytes) -> None:
-    """POST del JPEG anotado al adapter (D1). Aislado: falla en silencio, sin
-    afectar el output /ingest (LMP-4, dual output)."""
+    """POST del JPEG de preview (overlay EN) al adapter. Aislado: falla en silencio."""
     try:
         resp = await client.post(
             ADAPTER_PREVIEW_FRAME_URL,
@@ -686,28 +657,25 @@ async def _push_preview_frame(client: httpx.AsyncClient, jpeg: bytes) -> None:
 
 async def _run_detections(
     client: httpx.AsyncClient, frame_hires
-) -> tuple[Optional[list[dict[str, Any]]], bool]:
-    """Infiere+OCR sobre un frame ya capturado. Devuelve (detections, degraded).
+) -> tuple[Optional[list[dict[str, Any]]], bool, Optional[bytes]]:
+    """Infiere+OCR. Devuelve (detections, degraded, preview_jpeg).
 
-    `detections is None` señala "saltar este frame" (falla de encode o
-    PaddleX degradado) — distinto de `[]` (inferencia OK, cero detecciones).
-    Compartido entre el loop de video y el modo foto single-shot: mismo
-    pipeline resize -> encode -> PaddleX -> scale -> OCR opcional.
+    `detections is None` = saltar frame (encode/PaddleX falló). `[]` = OK sin dets.
+    `preview_jpeg` = overlay inglés local sobre frame_hires (o None si encode falla).
     """
     frame_infer, scale_x, scale_y = _maybe_resize_for_infer(frame_hires)
     jpeg = _encode_jpeg(frame_infer)
     if jpeg is None:
-        return None, False
+        return None, False, None
 
     detections = await _infer_paddlex(client, jpeg)
     if detections is None:
         await _notify_degraded(client)
-        return None, True
+        return None, True, None
 
     _scale_detections(detections, scale_x, scale_y)
 
-    # === OCR de patente (opcional, D1: bbox ya en coords frame_hires tras
-    # _scale_detections — sin 1/scale extra) ===
+    # === OCR de patente (opcional; bbox ya en coords frame_hires) ===
     if ENABLE_PLATE_OCR and detections:
         eligible = sorted(
             (d for d in detections if d.get("score", 0.0) > OCR_MIN_SCORE),
@@ -726,37 +694,48 @@ async def _run_detections(
                 d["plate"] = plate
     # ============================================================
 
-    return detections, False
+    preview_jpeg = _draw_preview(frame_hires, detections)
+    return detections, False, preview_jpeg
 
 
 async def _run_image_source(
     client: httpx.AsyncClient, path: str, selected_name: Optional[str]
 ) -> None:
-    """Fuente foto (single-shot, D5): imread+infer+overlay una vez, luego
-    idle re-empujando el mismo frame anotado + polleando hot-swap.
+    """Fuente foto (single-shot): imread+infer una vez; preview = overlay EN.
 
-    Retorna cuando la selección activa cambia (para que run_loop reabra).
+    Heartbeat del mismo JPEG + poll de hot-swap. Retorna al cambiar
+    la selección activa.
     """
+    global _tracker
+    _tracker = IoUTracker(IOU_THRESHOLD)
+
     frame_hires = cv2.imread(path)
     if frame_hires is None:
         raise RuntimeError(f"Cannot read image source: {path}")
 
-    detections, _degraded = await _run_detections(client, frame_hires)
+    detections, _degraded, preview_jpeg = await _run_detections(client, frame_hires)
     detections = detections or []
     if detections:
         await _post_json(client, ADAPTER_INGEST_URL, {"detections": detections})
 
-    annotated = _draw_overlay(frame_hires, detections)
-    preview_jpeg = _encode_preview_jpeg(annotated)
     if preview_jpeg is not None:
         await _push_preview_frame(client, preview_jpeg)
+    else:
+        logger.warning(
+            "Image source %s: sin preview (encode overlay falló)",
+            path,
+        )
     logger.info("Image source ready: %s detections=%d", path, len(detections))
 
     last_heartbeat = time.monotonic()
     while True:
         await asyncio.sleep(MEDIA_POLL_INTERVAL)
         polled = await _fetch_current_media(client)
-        if polled is not None and polled.get("name") != selected_name:
+        # None = clear / sin selección → salir a RTSP/SOURCE_URL.
+        if polled is None:
+            logger.info("Media cleared -> leave image source (%s)", selected_name)
+            return
+        if polled.get("name") != selected_name:
             logger.info("Media selection changed away from image -> %s", polled)
             return
 
@@ -770,7 +749,7 @@ async def run_loop() -> None:
     backoff = BACKOFF_INITIAL
     logger.info(
         "Bridge start source=%s media_dir=%s paddlex=%s%s adapter=%s demo=%s "
-        "fps=%.1f preview_fps=%.1f ocr_enabled=%s ocr_url=%s",
+        "fps=%.1f preview=overlay_en ocr_enabled=%s ocr_url=%s",
         SOURCE_URL,
         MEDIA_DIR,
         PADDLEX_URL,
@@ -778,7 +757,6 @@ async def run_loop() -> None:
         ADAPTER_INGEST_URL,
         DEMO_MODE,
         FPS,
-        PREVIEW_FPS,
         ENABLE_PLATE_OCR,
         PADDLEX_OCR_URL if ENABLE_PLATE_OCR else "-",
     )
@@ -798,7 +776,7 @@ async def run_loop() -> None:
                     backoff = BACKOFF_INITIAL
                     continue
 
-                # Poll de selección de muestra antes de (re)abrir la fuente (LMP-2, D3).
+                # Poll de selección de muestra antes de (re)abrir la fuente.
                 polled = await _fetch_current_media(client)
                 if polled is not None:
                     selected = polled
@@ -811,21 +789,17 @@ async def run_loop() -> None:
                     backoff = BACKOFF_INITIAL
                     continue
 
-                cap = _open_capture(source, is_rtsp)
+                # Solo RTSP vivo (ops). Sin archivo de video local ni overlay.
+                cap = _open_capture(source, is_rtsp=True)
                 if not cap.isOpened():
                     raise RuntimeError(f"Cannot open source: {source}")
 
-                logger.info("Source connected: %s (rtsp=%s)", source, is_rtsp)
+                logger.info("Source connected: %s (rtsp=True)", source)
                 backoff = BACKOFF_INITIAL
                 last_infer = 0.0
                 last_media_poll = time.monotonic()
                 infer_frame_count = 0
                 metrics_window_start = time.monotonic()
-                last_detections: list[dict[str, Any]] = []
-                prev_detections: list[dict[str, Any]] = []
-                curr_det_ts = 0.0
-                prev_det_ts = 0.0
-                last_infer_sec = 0.0
                 infer_task: Optional[asyncio.Task] = None
                 infer_started_at = 0.0
                 preview_push_task: Optional[asyncio.Task] = None
@@ -842,53 +816,32 @@ async def run_loop() -> None:
                             selected = polled
                             if infer_task is not None and not infer_task.done():
                                 infer_task.cancel()
-                            break  # reabrir con la nueva fuente en la vuelta externa
+                            break
 
                     ok, frame_hires = cap.read()
                     if not ok or frame_hires is None:
-                        if is_rtsp:
-                            raise RuntimeError("RTSP read failed")
-                        # EOF en archivo local: rewind, NO backoff-reconnect (BCS-2).
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        ok, frame_hires = cap.read()
-                        if not ok or frame_hires is None:
-                            try:
-                                cap.release()
-                            except Exception:
-                                pass
-                            cap = _open_capture(source, is_rtsp)
-                            if not cap.isOpened():
-                                raise RuntimeError(
-                                    f"Cannot reopen local source after EOF: {source}"
-                                )
-                            ok, frame_hires = cap.read()
-                            if not ok or frame_hires is None:
-                                raise RuntimeError(
-                                    f"Local source unreadable after reopen: {source}"
-                                )
-                        logger.debug("Local source EOF -> rewound: %s", source)
+                        raise RuntimeError("RTSP read failed")
 
                     now = time.monotonic()
 
-                    # Recolectar inferencia en background (no bloquea el preview).
                     if infer_task is not None and infer_task.done():
                         try:
-                            detections, _degraded = infer_task.result()
-                            last_infer_sec = time.monotonic() - infer_started_at
-                            infer_ms = last_infer_sec * 1000.0
+                            detections, _degraded, preview_jpeg = infer_task.result()
+                            infer_ms = (time.monotonic() - infer_started_at) * 1000.0
                             if detections is not None:
-                                prev_detections = last_detections
-                                prev_det_ts = curr_det_ts
-                                # Lista vacía: limpiar overlay (sin fantasmas).
-                                last_detections = detections
-                                # Timestamp del FOTOGRAMA analizado, no del fin
-                                # de inferencia (compensa latencia de PaddleX).
-                                curr_det_ts = infer_started_at
                                 await _post_json(
                                     client,
                                     ADAPTER_INGEST_URL,
                                     {"detections": detections},
                                 )
+                                if preview_jpeg is not None:
+                                    if (
+                                        preview_push_task is None
+                                        or preview_push_task.done()
+                                    ):
+                                        preview_push_task = asyncio.create_task(
+                                            _push_preview_frame(client, preview_jpeg)
+                                        )
                                 infer_frame_count += 1
                                 if infer_frame_count % BRIDGE_METRICS_EVERY == 0:
                                     window_s = time.monotonic() - metrics_window_start
@@ -899,11 +852,11 @@ async def run_loop() -> None:
                                     )
                                     logger.info(
                                         "metrics infer_ms=%.1f effective_fps=%.2f "
-                                        "preview_fps=%.1f dets=%d",
+                                        "dets=%d preview=%s",
                                         infer_ms,
                                         effective_fps,
-                                        PREVIEW_FPS,
                                         len(detections),
+                                        preview_jpeg is not None,
                                     )
                                     metrics_window_start = time.monotonic()
                         except asyncio.CancelledError:
@@ -912,7 +865,6 @@ async def run_loop() -> None:
                             logger.warning("Infer task failed: %s", exc)
                         infer_task = None
 
-                    # Lanzar nueva inferencia solo al ritmo BRIDGE_FPS.
                     if infer_task is None and (now - last_infer) >= FRAME_INTERVAL:
                         last_infer = now
                         infer_started_at = now
@@ -920,34 +872,8 @@ async def run_loop() -> None:
                             _run_detections(client, frame_hires.copy())
                         )
 
-                    # Proyectar hasta latencia medida (acotada a stale_max).
-                    if last_infer_sec > 0:
-                        max_ahead = min(
-                            OVERLAY_STALE_MAX_SEC,
-                            max(OVERLAY_EXTRAPOLATE_MAX_SEC, last_infer_sec * 1.05),
-                        )
-                    else:
-                        max_ahead = OVERLAY_EXTRAPOLATE_MAX_SEC
-                    dets_draw = _extrapolate_detections(
-                        last_detections,
-                        curr_det_ts,
-                        prev_detections,
-                        prev_det_ts,
-                        now,
-                        max_ahead=max_ahead,
-                    )
-                    annotated = _draw_overlay(frame_hires, dets_draw)
-                    preview_jpeg = _encode_preview_jpeg(annotated)
-                    if preview_jpeg is not None:
-                        # Si el push anterior sigue en vuelo, saltar este frame
-                        # en vez de acumular cola (también entrecorta).
-                        if preview_push_task is None or preview_push_task.done():
-                            preview_push_task = asyncio.create_task(
-                                _push_preview_frame(client, preview_jpeg)
-                            )
-
                     elapsed = time.monotonic() - tick_start
-                    sleep_for = PREVIEW_INTERVAL - elapsed
+                    sleep_for = FRAME_INTERVAL - elapsed
                     if sleep_for > 0:
                         await asyncio.sleep(sleep_for)
             except asyncio.CancelledError:
@@ -956,8 +882,28 @@ async def run_loop() -> None:
                 logger.error(
                     "Bridge error: %s — reconnect in %.1fs", exc, backoff
                 )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2.0, BACKOFF_MAX)
+                deadline = time.monotonic() + backoff
+                interrupted = False
+                while time.monotonic() < deadline:
+                    polled = await _fetch_current_media(client)
+                    if polled is not None:
+                        selected = polled
+                        _, _, is_image = _resolve_active_source(selected)
+                        if is_image:
+                            logger.info(
+                                "Media selected during backoff -> %s (interrupt reconnect)",
+                                selected.get("name"),
+                            )
+                            interrupted = True
+                            break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(1.0, remaining))
+                if interrupted:
+                    backoff = BACKOFF_INITIAL
+                else:
+                    backoff = min(backoff * 2.0, BACKOFF_MAX)
             finally:
                 if cap is not None:
                     try:

@@ -1,4 +1,4 @@
-"""Test standalone (stdlib unittest) para los helpers dual-frame de rtsp_bridge.
+"""Test standalone (stdlib unittest) para helpers del bridge (solo fotos + nativo).
 
 No forma parte de CI ni agrega dependencias nuevas (numpy ya viene con
 opencv-python-headless, requirements-bridge.txt). Ejecutar manualmente:
@@ -6,6 +6,7 @@ opencv-python-headless, requirements-bridge.txt). Ejecutar manualmente:
     python test_bridge_helpers.py
 """
 
+import base64
 import os
 import unittest
 
@@ -13,15 +14,18 @@ import numpy as np
 
 from rtsp_bridge import (
     BRIDGE_MAX_WIDTH,
+    RTSP_URL,
     SOURCE_URL,
-    _draw_overlay,
-    _extrapolate_detections,
+    _decode_paddlex_result_image,
+    _draw_preview,
     _is_rtsp_source,
     _is_safe_media_name,
     _maybe_resize_for_infer,
     _media_type_by_extension,
-    _overlay_type_es,
+    _normalize_paddlex_result,
     _parse_attr_labels,
+    _preview_box_color,
+    _preview_label,
     _resolve_active_source,
     _scale_detections,
 )
@@ -69,7 +73,6 @@ class ScaleDetectionsTests(unittest.TestCase):
         self.assertAlmostEqual(y1, 50.0 * scale_y)
         self.assertAlmostEqual(x2, 300.0 * scale_x)
         self.assertAlmostEqual(y2, 200.0 * scale_y)
-        # No debe tocar ninguna otra clave del dict de detección.
         self.assertEqual(dets[0]["track_id"], "1")
         self.assertEqual(dets[0]["label"], "car")
         self.assertIsNone(dets[0]["plate"])
@@ -82,48 +85,34 @@ class ScaleDetectionsTests(unittest.TestCase):
 
 
 class MediaTypeByExtensionTests(unittest.TestCase):
-    """Helper puro (sin cv2) usado por el resolver de fuente (overlay-preview)."""
-
-    def test_video_extensions(self) -> None:
-        for name in ("clip.mp4", "clip.AVI", "clip.mov", "clip.mkv"):
-            self.assertEqual(_media_type_by_extension(name), "video")
+    """Solo imágenes en el selector; video local ya no es un tipo de muestra."""
 
     def test_image_extensions(self) -> None:
         for name in ("photo.jpg", "photo.JPEG", "photo.png", "photo.bmp"):
             self.assertEqual(_media_type_by_extension(name), "image")
+
+    def test_video_extension_is_not_image(self) -> None:
+        self.assertIsNone(_media_type_by_extension("clip.mp4"))
 
     def test_unknown_extension_is_none(self) -> None:
         self.assertIsNone(_media_type_by_extension("readme.txt"))
 
 
 class SafeMediaNameTests(unittest.TestCase):
-    """Allow-list guard local (defensa en profundidad, LMP-1)."""
-
     def test_plain_basename_is_safe(self) -> None:
-        self.assertTrue(_is_safe_media_name("Brasil6.mp4"))
+        self.assertTrue(_is_safe_media_name("sample_mvi20011_img00001.jpg"))
 
     def test_path_traversal_rejected(self) -> None:
         self.assertFalse(_is_safe_media_name("../etc/passwd"))
-        self.assertFalse(_is_safe_media_name("sub/dir/file.mp4"))
+        self.assertFalse(_is_safe_media_name("sub/dir/file.jpg"))
         self.assertFalse(_is_safe_media_name(".."))
         self.assertFalse(_is_safe_media_name(""))
 
 
 class ResolveActiveSourceTests(unittest.TestCase):
-    """Selector RTSP vs. archivo local (BCS-1, BCS-2)."""
-
     def test_rtsp_url_detected(self) -> None:
         self.assertTrue(_is_rtsp_source("rtsp://mediamtx:8554/webcam"))
-        self.assertFalse(_is_rtsp_source("/media/videos/Brasil6.mp4"))
-
-    def test_selected_video_resolves_local_non_rtsp(self) -> None:
-        source, is_rtsp, is_image = _resolve_active_source(
-            {"name": "Brasil6.mp4", "type": "video"}
-        )
-
-        self.assertFalse(is_rtsp)
-        self.assertFalse(is_image)
-        self.assertTrue(source.endswith(os.path.join("videos", "Brasil6.mp4")))
+        self.assertFalse(_is_rtsp_source("/media/images/sample.jpg"))
 
     def test_selected_photo_resolves_image_branch(self) -> None:
         source, is_rtsp, is_image = _resolve_active_source(
@@ -134,48 +123,73 @@ class ResolveActiveSourceTests(unittest.TestCase):
         self.assertTrue(is_image)
         self.assertTrue(source.endswith(os.path.join("images", "sample.jpg")))
 
+    def test_selected_video_is_ignored_falls_back(self) -> None:
+        source, is_rtsp, is_image = _resolve_active_source(
+            {"name": "Brasil6.mp4", "type": "video"}
+        )
+
+        self.assertEqual(source, SOURCE_URL if _is_rtsp_source(SOURCE_URL) else RTSP_URL)
+        self.assertTrue(is_rtsp)
+        self.assertFalse(is_image)
+
     def test_no_selection_falls_back_to_source_url(self) -> None:
         source, is_rtsp, is_image = _resolve_active_source(None)
 
-        self.assertEqual(source, SOURCE_URL)
-        self.assertFalse(is_image)
+        if _is_rtsp_source(SOURCE_URL):
+            self.assertEqual(source, SOURCE_URL)
+            self.assertTrue(is_rtsp)
+            self.assertFalse(is_image)
+        elif _media_type_by_extension(SOURCE_URL) == "image":
+            self.assertEqual(source, SOURCE_URL)
+            self.assertTrue(is_image)
+        else:
+            self.assertEqual(source, RTSP_URL)
+            self.assertTrue(is_rtsp)
 
 
-class DrawOverlayTests(unittest.TestCase):
-    """Bbox+label sobre copia del frame (FO-1); no-op sin detecciones."""
+class DecodePaddlexResultImageTests(unittest.TestCase):
+    def test_decodes_plain_base64(self) -> None:
+        payload = b"\xff\xd8\xfffake-jpeg"
+        data = {"result": {"vehicles": [], "image": base64.b64encode(payload).decode()}}
+        self.assertEqual(_decode_paddlex_result_image(data), payload)
 
-    def test_no_detections_returns_same_frame_unmodified(self) -> None:
-        frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        result = _draw_overlay(frame, [])
+    def test_decodes_data_uri(self) -> None:
+        payload = b"jpeg-bytes"
+        b64 = base64.b64encode(payload).decode()
+        data = {"result": {"image": f"data:image/jpeg;base64,{b64}"}}
+        self.assertEqual(_decode_paddlex_result_image(data), payload)
 
-        self.assertIs(result, frame)
+    def test_missing_image_returns_none(self) -> None:
+        self.assertIsNone(_decode_paddlex_result_image({"result": {"vehicles": []}}))
+        self.assertIsNone(_decode_paddlex_result_image({"result": {"image": ""}}))
 
-    def test_with_detections_returns_modified_copy(self) -> None:
-        frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        dets = [
-            {
-                "track_id": "1",
-                "label": "car",
-                "score": 0.9,
-                "bbox": [10.0, 10.0, 100.0, 100.0],
-                "plate": {"text": "ABC123", "score": 0.8},
+
+class NormalizePaddlexResultTests(unittest.TestCase):
+    def test_vehicles_shape_yields_detections(self) -> None:
+        data = {
+            "result": {
+                "vehicles": [
+                    {
+                        "bbox": [10, 20, 30, 40],
+                        "score": 0.91,
+                        "attributes": [
+                            {"label": "red(红色)", "score": 0.9},
+                            {"label": "sedan(轿车)", "score": 0.8},
+                        ],
+                    }
+                ],
+                "image": base64.b64encode(b"x").decode(),
             }
-        ]
+        }
+        dets = _normalize_paddlex_result(data)
+        self.assertEqual(len(dets), 1)
+        self.assertEqual(dets[0]["label"], "sedan")
+        self.assertEqual(dets[0]["color"], "red")
+        self.assertEqual(dets[0]["bbox"], [10.0, 20.0, 30.0, 40.0])
+        self.assertIn("track_id", dets[0])
 
-        result = _draw_overlay(frame, dets)
 
-        self.assertIsNot(result, frame)
-        self.assertTrue(np.any(result != frame))
-
-
-class OverlaySpanishLabelsTests(unittest.TestCase):
-    def test_overlay_maps_vehicle_to_spanish(self) -> None:
-        self.assertEqual(_overlay_type_es("vehicle"), "vehiculo")
-        self.assertEqual(_overlay_type_es("car"), "auto")
-
-    def test_overlay_strips_chinese_parenthetical(self) -> None:
-        self.assertEqual(_overlay_type_es("sedan(轿车)"), "sedan")
-
+class AttrLabelTests(unittest.TestCase):
     def test_parse_attr_ignores_pure_chinese(self) -> None:
         color, vtype = _parse_attr_labels(["红色", "轿车"], [0.9, 0.8])
         self.assertIsNone(color)
@@ -187,34 +201,52 @@ class OverlaySpanishLabelsTests(unittest.TestCase):
         self.assertEqual(vtype, "sedan")
 
 
-class ExtrapolateDetectionsTests(unittest.TestCase):
-    def test_projects_bbox_forward_with_constant_velocity(self) -> None:
-        prev = [{"track_id": "1", "bbox": [0.0, 0.0, 10.0, 10.0], "label": "car"}]
-        curr = [{"track_id": "1", "bbox": [10.0, 0.0, 20.0, 10.0], "label": "car"}]
-        # Velocidad +10 px/s en x; 0.5s adelante => +5
-        out = _extrapolate_detections(curr, 1.0, prev, 0.0, 1.5, max_ahead=1.0)
-        self.assertEqual(out[0]["bbox"], [15.0, 0.0, 25.0, 10.0])
-
-    def test_no_prev_returns_curr_unchanged(self) -> None:
-        curr = [{"track_id": "1", "bbox": [10.0, 0.0, 20.0, 10.0]}]
-        out = _extrapolate_detections(curr, 1.0, None, 0.0, 1.5)
-        self.assertEqual(out[0]["bbox"], [10.0, 0.0, 20.0, 10.0])
-
-    def test_stale_returns_empty(self) -> None:
-        curr = [{"track_id": "1", "bbox": [10.0, 0.0, 20.0, 10.0]}]
-        out = _extrapolate_detections(
-            curr, 1.0, None, 0.0, 5.0, max_ahead=2.5, stale_max=3.0
+class PreviewLabelTests(unittest.TestCase):
+    def test_english_parts_only(self) -> None:
+        self.assertEqual(
+            _preview_label({"label": "suv", "color": "black"}),
+            "suv black",
         )
-        self.assertEqual(out, [])
 
-    def test_projects_up_to_higher_max_ahead(self) -> None:
-        prev = [{"track_id": "1", "bbox": [0.0, 0.0, 10.0, 10.0], "label": "car"}]
-        curr = [{"track_id": "1", "bbox": [10.0, 0.0, 20.0, 10.0], "label": "car"}]
-        # 2.0s adelante a 10 px/s => +20 (antes el tope 0.6 dejaba solo +6)
-        out = _extrapolate_detections(
-            curr, 1.0, prev, 0.0, 3.0, max_ahead=2.5, stale_max=3.0
-        )
-        self.assertEqual(out[0]["bbox"], [30.0, 0.0, 40.0, 10.0])
+    def test_fallback_vehicle(self) -> None:
+        self.assertEqual(_preview_label({}), "vehicle")
+
+    def test_no_cjk_in_label(self) -> None:
+        text = _preview_label({"label": "sedan", "color": "golden"})
+        self.assertNotRegex(text, r"[\u4e00-\u9fff]")
+
+
+class PreviewBoxColorTests(unittest.TestCase):
+    def test_types_get_distinct_colors(self) -> None:
+        sedan = _preview_box_color({"label": "sedan"})
+        suv = _preview_box_color({"label": "suv"})
+        truck = _preview_box_color({"label": "truck"})
+        self.assertNotEqual(sedan, suv)
+        self.assertNotEqual(suv, truck)
+        self.assertNotEqual(sedan, (0, 220, 0))
+
+    def test_unknown_uses_track_palette(self) -> None:
+        a = _preview_box_color({"label": "weird", "track_id": "1"})
+        b = _preview_box_color({"label": "weird", "track_id": "2"})
+        self.assertNotEqual(a, b)
+
+
+class DrawPreviewTests(unittest.TestCase):
+    def test_returns_jpeg_bytes(self) -> None:
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        dets = [
+            {
+                "label": "suv",
+                "color": "black",
+                "bbox": [10.0, 20.0, 80.0, 90.0],
+                "score": 0.9,
+                "track_id": "1",
+            }
+        ]
+        jpeg = _draw_preview(frame, dets)
+        self.assertIsNotNone(jpeg)
+        assert jpeg is not None
+        self.assertTrue(jpeg.startswith(b"\xff\xd8"))
 
 
 if __name__ == "__main__":

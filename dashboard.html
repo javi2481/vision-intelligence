@@ -9,7 +9,152 @@
   <link rel="stylesheet" href="https://unpkg.com/amis@6.7.0/sdk/helper.css" />
   <link rel="stylesheet" href="https://unpkg.com/amis@6.7.0/sdk/iconfont.css" />
   <style>
-    html, body, #root { height: 100%; margin: 0; background: #f0f2f5; }
+    :root {
+      --vi-bg: #eef2f6;
+      --vi-ink: #1a1f24;
+      --vi-muted: #5c6670;
+      --vi-line: #d5dde5;
+      --vi-accent: #0b6bcb;
+      --vi-surface: #ffffff;
+      --vi-ok: #1b7f4e;
+      --vi-warn: #b45309;
+    }
+    html, body, #root {
+      height: 100%;
+      margin: 0;
+      background: var(--vi-bg);
+      color: var(--vi-ink);
+    }
+    .vi-page .cxd-Page-body {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1rem 1.25rem 2rem;
+    }
+    .vi-badge {
+      display: inline-block;
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
+      background: #e8eef5;
+      color: var(--vi-accent);
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .vi-panel-main .cxd-Panel-body,
+    .vi-panel-detail .cxd-Panel-body {
+      background: var(--vi-surface);
+    }
+    .vi-preview img {
+      display: block;
+      width: 100%;
+      max-height: min(52vh, 520px);
+      object-fit: contain;
+      margin: 0 auto;
+      background: #0f1216;
+      border: 1px solid var(--vi-line);
+      border-radius: 12px;
+    }
+    .vi-status {
+      display: block;
+      font-size: 0.95rem;
+      line-height: 1.45;
+      color: var(--vi-ink);
+    }
+    .vi-status-label {
+      display: inline-block;
+      margin-right: 0.35rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      background: #e8eef5;
+      color: var(--vi-accent);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .vi-muted { color: var(--vi-muted); font-size: 0.85rem; }
+    .vi-hint {
+      color: var(--vi-muted);
+      font-size: 0.85rem;
+      line-height: 1.4;
+    }
+    .vi-upload .cxd-FileControl-dropzone,
+    .vi-upload .cxd-FileControl-dropzone.is-empty {
+      min-height: 0 !important;
+      height: auto !important;
+      padding: 0 !important;
+      border: none !important;
+      background: transparent !important;
+    }
+    .vi-upload .cxd-FileControl-dropzone > div { display: none !important; }
+    .vi-upload .cxd-Button { min-height: 40px; }
+
+    .vi-detail { margin-top: 1rem; }
+    .vi-empty-card {
+      text-align: center;
+      padding: 1.75rem 1rem;
+      border: 1px dashed var(--vi-line);
+      border-radius: 12px;
+      background: #f8fafc;
+      color: var(--vi-muted);
+    }
+    .vi-empty-card strong {
+      display: block;
+      color: var(--vi-ink);
+      font-size: 1.05rem;
+      margin-bottom: 0.35rem;
+    }
+    .vi-empty-card p { margin: 0; font-size: 0.9rem; }
+
+    .vi-stat {
+      background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+      border: 1px solid var(--vi-line);
+      border-radius: 12px;
+      padding: 1rem 1.1rem;
+      text-align: center;
+      height: 100%;
+    }
+    .vi-stat-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      line-height: 1.1;
+      color: var(--vi-ink);
+    }
+    .vi-stat-ok { color: var(--vi-ok); font-size: 1.35rem; }
+    .vi-stat-label {
+      margin-top: 0.35rem;
+      font-size: 0.8rem;
+      color: var(--vi-muted);
+      font-weight: 500;
+    }
+
+    .vi-table .cxd-Table-table th {
+      background: #f3f6f9 !important;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: var(--vi-muted);
+    }
+    .vi-pill {
+      display: inline-block;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .vi-pill-type { background: #e7f0fa; color: #0b4f8a; }
+    .vi-pill-color { background: #f3f4f6; color: #374151; }
+    .vi-conf {
+      display: inline-block;
+      min-width: 3.2rem;
+      text-align: center;
+      padding: 0.15rem 0.5rem;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 0.85rem;
+    }
+    .vi-conf-alta { background: #dcfce7; color: #166534; }
+    .vi-conf-media { background: #fef3c7; color: #92400e; }
+    .vi-conf-baja { background: #fee2e2; color: #991b1b; }
   </style>
 </head>
 <body>

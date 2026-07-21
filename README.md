@@ -41,13 +41,10 @@ El bridge envía frames a **PaddleX** y solo JSON al adaptador. El adaptador per
 
 | Variable | Default | Propósito |
 |----------|---------|-----------|
-| `BRIDGE_FPS` | `5` | Frecuencia de **inferencia** PaddleX (detección). Independiente del preview. |
-| `PREVIEW_FPS` | `20` | Frecuencia objetivo del video en el panel. |
-| `PREVIEW_ENCODE_MAX_WIDTH` | `960` | Ancho del JPEG del preview (más chico = más fluido). |
-| `BRIDGE_MAX_WIDTH` | `960` | Ancho máximo de la imagen que se envía a inferencia. Sobre este umbral se reduce solo la copia de inferencia (ver abajo); a la par o por debajo no hay resize. |
-| `OVERLAY_EXTRAPOLATE_MAX_SEC` | `2.5` | Segundos máximos de proyección del bbox (compensa latencia de PaddleX). |
-| `OVERLAY_STALE_MAX_SEC` | `3.0` | Si la detección es más vieja, no se dibuja (evita fantasmas en asfalto). |
+| `BRIDGE_FPS` | `5` | Frecuencia de **inferencia** PaddleX (y de actualización del preview en RTSP). |
+| `BRIDGE_MAX_WIDTH` | `960` | Ancho máximo de la imagen que se envía a inferencia. Sobre este umbral se reduce solo la copia de inferencia; a la par o por debajo no hay resize. |
 | `BRIDGE_METRICS_EVERY` | `30` | Cada cuántos frames inferidos se emite una línea de métricas en el log. |
+| `PREVIEW_IMAGE_HEARTBEAT_SECONDS` | `5.0` | En modo foto, re-empuja el mismo JPEG de overlay para mantener `/preview.mjpg`. |
 
 ### OCR de patente (servicio `paddlex-ocr`, opcional)
 
@@ -70,64 +67,77 @@ En `rtsp_bridge.py`, después de `_scale_detections(...)` (bbox ya en coords `fr
 
 **Limitación**: el pipeline `OCR` de PaddleX es un OCR genérico (no un modelo de reconocimiento de patentes dedicado). La regex de 5-8 alfanuméricos filtra ruido, pero puede producir falsos positivos/negativos con placas fuera de ese formato o con texto ambiguo en la escena (carteles, logos). Para producción se recomienda evaluar un modelo/pipeline específico de patentes.
 
-## Selector de muestra local + preview anotado (overlay-preview)
+## Fotos auto + preview overlay EN (R0 vehículos)
 
-Además de RTSP en vivo, el stack puede correr contra un video o foto de muestra
-local, con overlay de bbox+patente dibujado por el bridge y expuesto como
-preview en el dashboard — sin FFmpeg/MediaMTX en el camino, sin tocar
-`epp_core.py`, sin React ni webcam del usuario (EPP Punto 12).
+El camino de demo usa **solo fotos** en la raíz de `imagenes_muestra/` (p. ej.
+`sample_mvi20011_img00001.jpg`, `sample_mvi20032_img00001.jpg`). No se listan
+videos de muestra ni el árbol DETRAC (~140k imágenes).
+
+**Flujo**: subí una foto desde el panel (`POST /media/upload`) o copiá un JPG a
+`imagenes_muestra/` → el adapter auto-selecciona el más nuevo → el bridge polea
+`GET /media/current` → `cv2.imread` + inferencia PaddleX → overlay local con
+**colores por tipo** (etiqueta con fondo sólido + texto blanco) a
+`POST /preview/frame` + JSON a `/ingest`. `POST /media/clear` vuelve a
+`RTSP_URL` y **no** re-selecciona fotos ya vistas hasta que aparezca/actualice
+un archivo nuevo.
+
+**Preview** = overlay OpenCV con etiquetas en inglés. No se usa `result.image`
+de PaddleX (trae chino bilingüe). RTSP vivo (MediaMTX) sigue como fallback ops
+al limpiar la selección.
 
 ### Preview anotado vs HLS crudo
 
 | Qué ves | Dónde | Contenido |
 |---------|--------|-----------|
-| **Preview anotado** | Panel (`/preview.mjpg` / `/preview.jpg`) | Video/foto **con recuadros** dibujados por el bridge |
-| **HLS / “HLS crudo”** | Botón del toolbar → MediaMTX `:8888/webcam` | Stream **sin** recuadros (solo visualización) |
-
-No confundir ambos: la IA y los eventos salen del bridge; HLS/WebRTC son solo espejo del path MediaMTX.
+| **Preview anotado** | Panel (`/preview.jpg` / `/preview.mjpg`) | Frame + cajas/labels EN del bridge |
+| **HLS / “HLS crudo”** | Botón del toolbar → MediaMTX `:8888/webcam` | Stream **sin** anotaciones (solo espejo MediaMTX) |
 
 > **Ops:** no levantar `docker compose --profile demo` junto al bridge real.
-> `bridge-demo` postea detecciones sintéticas (`ABC123`) al mismo `/ingest` y ensucia la tabla.
+> `bridge-demo` postea detecciones sintéticas (`ABC123`) al mismo `/ingest`.
 
-**Flujo**: AMIS (`select`) → `POST /media/select` (adapter valida contra el
-allow-list real de `videos_muestra/`/`imagenes_muestra/`) → el bridge polea
-`GET /media/current` y reabre su `cv2.VideoCapture` en caliente (sin reiniciar
-el contenedor) → dibuja bbox+label sobre `frame_hires` → empuja el JPEG
-anotado a `POST /preview/frame` → el dashboard lo muestra vía `/preview.mjpg`
-(video) o `/preview.jpg` (foto). `POST /ingest` sigue igual: `/events` no se
-ve afectado (dual output). `POST /media/clear` quita la muestra y el bridge
-vuelve a `RTSP_URL` (camino vivo).
+### Plan B (MVP) y Plan C
+
+- **Plan B (activo)**: attr PaddleX + IoU tracker (solo `track_id` → ingest/epp)
+  + preview overlay EN. El IoU **no** se usa para pintar atributos.
+- **Plan C (épica futura)**: PP-Vehicle / FastDeploy si hace falta MOT nativo
+  con el mismo contrato HTTP. No bloquea R0.
+- **HPIP**: opcional vía `VI_USE_HPIP=1` en `entrypoint.paddlex.sh` (tras
+  `paddlex --install hpi-cpu` y benchmark ≥ ~1.5× estable). Default off.
 
 ### Variables de entorno
 
 | Variable | Default | Propósito |
 |----------|---------|-----------|
-| `MEDIA_DIR` | `/media` | Punto de montaje RO común (adapter+bridge): `{MEDIA_DIR}/videos` ← `./videos_muestra`, `{MEDIA_DIR}/images` ← `./imagenes_muestra`. |
-| `MEDIA_POLL_INTERVAL` | `1.0` | Segundos entre polls del bridge a `GET /media/current` para detectar hot-swap. |
-| `SOURCE_URL` | (vacío → `RTSP_URL`) | Generaliza el origen del bridge: URL RTSP o ruta local de archivo. Solo aplica mientras no haya una muestra seleccionada. |
-| `ADAPTER_MEDIA_CURRENT_URL` | `http://adapter:8000/media/current` | URL que el bridge polea para hot-swap. |
-| `ADAPTER_PREVIEW_FRAME_URL` | `http://adapter:8000/preview/frame` | URL donde el bridge empuja el JPEG anotado. |
+| `MEDIA_DIR` | `/media` | Montaje RO: `{MEDIA_DIR}/images` ← `./imagenes_muestra`. |
+| `MEDIA_POLL_INTERVAL` | `1.0` | Segundos entre polls del bridge a `GET /media/current`. |
+| `MEDIA_WATCH_INTERVAL` | `1.0` | (adapter) Segundos entre scans de carpeta para auto-select. |
+| `SOURCE_URL` | (vacío → `RTSP_URL`) | RTSP vivo o ruta local de **imagen** si no hay selección. |
+| `ADAPTER_MEDIA_CURRENT_URL` | `http://adapter:8000/media/current` | Hot-swap. |
+| `ADAPTER_PREVIEW_FRAME_URL` | `http://adapter:8000/preview/frame` | Push del JPEG anotado. |
 | `PREVIEW_MJPEG_INTERVAL` | `0.05` | (adapter) Intervalo de re-emisión de `/preview.mjpg`. |
 
 ### Endpoints (adapter)
 
 | Endpoint | Descripción |
 |----------|-------------|
-| `GET /media/list` | `{items:[{name,type}]}` — allow-list real (archivos físicamente presentes, no recursivo). |
-| `GET /media/current` | `{name,type,generation}` — fuente activa (`name=null` = sin muestra → RTSP). |
-| `POST /media/select {name}` | Selecciona una muestra allow-listed; `400` si no está en la lista. |
-| `POST /media/clear` | Quita la muestra; el bridge vuelve a `RTSP_URL` / `SOURCE_URL`. |
-| `POST /preview/frame` | (uso interno del bridge) Body `image/jpeg` crudo → guarda el último frame anotado. |
-| `GET /preview.mjpg` | Stream `multipart/x-mixed-replace` del preview anotado (video). |
-| `GET /preview.jpg` | Único JPEG anotado más reciente (foto); `503` si aún no hay frame. |
+| `GET /media/list` | `{items:[{name,type:"image"}]}` — solo raíz de images, no recursivo. |
+| `GET /media/current` | `{name,type,generation}` — foto activa (`name=null` → RTSP). |
+| `POST /media/select {name}` | Solo imagen allow-listed; `400` si no (API / ops). |
+| `POST /media/upload` | Multipart `file` → guarda en `imagenes_muestra/` y auto-selecciona. |
+| `POST /media/clear` | Quita la foto; el bridge vuelve a `RTSP_URL` / `SOURCE_URL`. |
+| `POST /preview/frame` | Body `image/jpeg` (overlay EN) → último preview. |
+| `GET /preview.mjpg` | Stream MJPEG del preview. |
+| `GET /preview.jpg` | Último JPEG; `503` si aún no hay frame. |
 
-### Escenarios de smoke manual (ejecutar tras `docker compose up --build`)
+### Escenarios de smoke manual (tras `docker compose up --build`)
 
-1. **Boxes alineados en `Brasil6.mp4`**: en el dashboard, seleccionar `Brasil6.mp4` en "Fuente local (muestras)"; el preview debe mostrar rectángulos+etiqueta alineados sobre los vehículos detectados.
-2. **Foto sirve un solo frame anotado**: seleccionar una muestra de imagen (`imagenes_muestra/sample_*.jpg`); `/preview.jpg` debe devolver un único JPEG anotado (o el frame se mantiene fijo en `/preview.mjpg` si el navegador cae al fallback `onerror`).
-3. **`/events` sigue poblándose durante el preview**: con una muestra de video seleccionada, la tabla de eventos y las 4 tarjetas KPI deben seguir actualizándose exactamente igual que antes de este cambio.
-4. **Selección fuera del allow-list se rechaza**: `curl -X POST http://localhost:8000/media/select -H "Content-Type: application/json" -d "{\"name\":\"../etc/passwd\"}"` debe responder `400` y `GET /media/current` debe seguir mostrando la fuente previa sin cambios.
-
+1. **Drop / subir foto**: preview con cajas arriba; abajo resumen + torta +
+   tabla (solo de esa foto). Sin alertas JetLinks ni timeline de “eventos/min”.
+2. **Sin loop**: el detalle hace silent poll lento; no re-monta 4 APIs cada 2s.
+3. **Fuera del allow-list**:
+   `curl -X POST http://localhost:8000/media/select -H "Content-Type: application/json" -d "{\"name\":\"../etc/passwd\"}"`
+   → `400`; un `.mp4` tampoco debe listarse ni aceptarse.
+4. **Clear**: “Limpiar foto” vacía buffer y preview; no re-autoelige hasta un JPG nuevo.
 ## Camino vivo reproducible (FFmpeg → MediaMTX → bridge)
 
 Sin webcam física: publicar un archivo de muestra en loop hacia MediaMTX; el bridge
@@ -157,7 +167,10 @@ Webcam física (opcional): `inject_webcam.bat` / `inject_webcam.sh` — ver tamb
 
 ### Frame de alta resolución vs. frame de inferencia
 
-Cada frame capturado (`frame_hires`) se mantiene sin modificar en todo momento (reservado para overlay/OCR futuro). Solo si `frame_hires` supera `BRIDGE_MAX_WIDTH` de ancho se deriva un `frame_infer` reducido (`cv2.resize` + `INTER_AREA`) exclusivamente para JPEG-encode e inferencia PaddleX; si el ancho está dentro del límite, `frame_infer` es el mismo frame (sin copia, sin costo extra). Las detecciones que devuelve PaddleX vienen en coordenadas de `frame_infer`, y el bridge las reescala de vuelta a coordenadas de `frame_hires` (bbox nativo) antes de enviarlas al adaptador — el contrato `epp_core.py` y el adaptador no ven ninguna diferencia.
+Cada frame capturado (`frame_hires`) se mantiene sin modificar (OCR/crop). Si
+supera `BRIDGE_MAX_WIDTH` se deriva `frame_infer` para el POST a PaddleX. Las
+detecciones se reescalan a coords `frame_hires` antes del ingest; el preview
+se dibuja en local (overlay EN) sobre `frame_hires`.
 
 ### Medición de FPS/CPU
 
@@ -308,16 +321,17 @@ El sweeper del adaptador emite al expirar el TTL del track (default 10 s) o si l
 |---------|-----|
 | `epp_core.py` | Contrato Pydantic (portable) |
 | `adapter.py` | FastAPI ingest / events / rules |
-| `rtsp_bridge.py` | RTSP → PaddleX → ingest |
+| `rtsp_bridge.py` | Foto/RTSP → PaddleX → ingest + preview overlay EN |
 | `rules_sink.py` | Capa de reglas headless (perfil `rules`) |
 | `amis_dashboard.json` | UI declarativa + ECharts |
 | `dashboard.html` | Shell AMIS CDN |
 | `docker-compose.yml` | Orquestación `epp-network` |
 | `Dockerfile.*` | Imágenes adapter / bridge / paddlex |
+| `entrypoint.paddlex.sh` | Serve attr/OCR; `VI_USE_HPIP` opcional |
 | `inject_webcam.*` | Publicación RTSP desde webcam del host |
-| `publish_sample.*` | Publicación RTSP en loop desde video de muestra (vivo reproducible) |
+| `publish_sample.*` | Publicación RTSP en loop (camino vivo ops) |
 | `webrtc_config.md` | WebRTC opcional |
-| `videos_muestra/`, `imagenes_muestra/` | Muestras locales para el selector (gitignored, RO en compose) |
+| `imagenes_muestra/` | Fotos del selector (raíz; gitignored, RO en compose) |
 
 ## Troubleshooting
 

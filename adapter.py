@@ -16,13 +16,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -61,17 +62,16 @@ def _enforce_production_secrets() -> None:
 
 _enforce_production_secrets()
 
-# --- Selector de muestra local + preview anotado (overlay-preview) ---
-# MEDIA_DIR contiene dos subcarpetas (montadas RO en docker-compose):
-#   {MEDIA_DIR}/videos  <- ./videos_muestra
-#   {MEDIA_DIR}/images  <- ./imagenes_muestra
+# --- Selector de muestra local (solo fotos) + preview overlay EN ---
+# MEDIA_DIR/images <- ./imagenes_muestra (montado RO en docker-compose).
+# Solo JPGs (etc.) en la raíz de images; no recursivo (no indexa DETRAC).
 # El allow-list es SIEMPRE lo que existe físicamente ahí; nunca se acepta
 # una ruta arbitraria del cliente (ver `_find_media_path`).
+# Watcher: al aparecer/actualizar un JPG, auto-selecciona el más nuevo (mtime).
 MEDIA_DIR = os.getenv("MEDIA_DIR", "/media")
-MEDIA_VIDEO_SUBDIR = "videos"
 MEDIA_IMAGE_SUBDIR = "images"
-MEDIA_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv"}
 MEDIA_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+MEDIA_WATCH_INTERVAL = float(os.getenv("MEDIA_WATCH_INTERVAL", "1.0"))
 PREVIEW_MJPEG_INTERVAL = float(os.getenv("PREVIEW_MJPEG_INTERVAL", "0.05"))
 
 
@@ -88,50 +88,137 @@ track_cache: dict[str, TrackBucket] = {}
 events_buffer: deque[dict[str, Any]] = deque(maxlen=EVENTS_BUFFER_SIZE)
 _stats = {"ingested": 0, "emitted": 0, "paddlex_degraded": False}
 
-# Estado de la muestra activa + último frame anotado (preview overlay-preview).
+# Estado de la muestra activa + último JPEG de preview (overlay EN).
 _current_media: Optional[dict[str, str]] = None
 _generation: int = 0
 _latest_frame: Optional[bytes] = None
 _frame_lock = asyncio.Lock()
+# Watcher de carpeta: mtimes conocidos (basename → mtime). Bootstrap al 1er tick.
+_media_seen_mtimes: dict[str, float] = {}
+_media_watch_bootstrapped: bool = False
+
+
+def _load_placeholder_jpeg() -> bytes:
+    """JPEG de marca para preview vacío / tras Limpiar foto."""
+    path = os.path.join(STATIC_DIR, "placeholder_preview.jpg")
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        if data:
+            return data
+    except OSError as exc:
+        logger.warning("Placeholder preview missing at %s (%s)", path, exc)
+    return b""
+
+
+_PLACEHOLDER_JPEG = _load_placeholder_jpeg()
+if _PLACEHOLDER_JPEG:
+    _latest_frame = _PLACEHOLDER_JPEG
 
 
 def _list_media_items() -> list[dict[str, str]]:
-    """Enumera archivos reales (no recursivo) en {MEDIA_DIR}/videos y /images.
+    """Enumera imágenes reales (no recursivo) en {MEDIA_DIR}/images.
 
     Este es EL allow-list: nunca se acepta un nombre que no aparezca acá.
-    No recorre subcarpetas (evita enumerar datasets anidados enormes).
+    No recorre subcarpetas (evita enumerar DETRAC u otros datasets anidados).
     """
     items: list[dict[str, str]] = []
-    groups = (
-        (MEDIA_VIDEO_SUBDIR, "video", MEDIA_VIDEO_EXTENSIONS),
-        (MEDIA_IMAGE_SUBDIR, "image", MEDIA_IMAGE_EXTENSIONS),
-    )
-    for subdir, media_type, extensions in groups:
-        folder = os.path.join(MEDIA_DIR, subdir)
-        if not os.path.isdir(folder):
+    folder = os.path.join(MEDIA_DIR, MEDIA_IMAGE_SUBDIR)
+    if not os.path.isdir(folder):
+        return items
+    for entry in sorted(os.listdir(folder)):
+        full_path = os.path.join(folder, entry)
+        if not os.path.isfile(full_path):
             continue
-        for entry in sorted(os.listdir(folder)):
-            full_path = os.path.join(folder, entry)
-            if not os.path.isfile(full_path):
-                continue
-            if os.path.splitext(entry)[1].lower() not in extensions:
-                continue
-            items.append({"name": entry, "type": media_type})
+        if os.path.splitext(entry)[1].lower() not in MEDIA_IMAGE_EXTENSIONS:
+            continue
+        items.append({"name": entry, "type": "image"})
     return items
 
 
+def _scan_media_mtimes() -> dict[str, float]:
+    """Basename → mtime de imágenes en la raíz de MEDIA_DIR/images."""
+    out: dict[str, float] = {}
+    folder = os.path.join(MEDIA_DIR, MEDIA_IMAGE_SUBDIR)
+    if not os.path.isdir(folder):
+        return out
+    for entry in os.listdir(folder):
+        full_path = os.path.join(folder, entry)
+        if not os.path.isfile(full_path):
+            continue
+        if os.path.splitext(entry)[1].lower() not in MEDIA_IMAGE_EXTENSIONS:
+            continue
+        try:
+            out[entry] = os.path.getmtime(full_path)
+        except OSError:
+            continue
+    return out
+
+
+def _pick_newest_name(mtimes: dict[str, float]) -> Optional[str]:
+    """Nombre con mayor mtime; None si vacío. Empate: orden lexicográfico."""
+    if not mtimes:
+        return None
+    return max(mtimes.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def _media_changes_detected(
+    seen: dict[str, float], current: dict[str, float]
+) -> bool:
+    """True si hay archivo nuevo o mtime mayor que el último visto."""
+    for name, mtime in current.items():
+        prev = seen.get(name)
+        if prev is None or mtime > prev:
+            return True
+    return False
+
+
+def _flush_detection_session() -> None:
+    """Limpia buffer/tracks y deja el preview en el placeholder de marca."""
+    global _latest_frame
+
+    events_buffer.clear()
+    track_cache.clear()
+    _stats["ingested"] = 0
+    _stats["emitted"] = 0
+    _stats["paddlex_degraded"] = False
+    # Empuja marca al MJPEG: si queda None el browser conserva el último frame.
+    _latest_frame = _PLACEHOLDER_JPEG or None
+
+
+def _apply_media_selection(name: str) -> Optional[dict[str, Any]]:
+    """Selecciona foto allow-listed; bump generation. None si inválida."""
+    global _current_media, _generation
+
+    resolved = _find_media_path(name)
+    if resolved is None:
+        return None
+    path, media_type = resolved
+    if media_type != "image":
+        return None
+    _flush_detection_session()
+    _current_media = {"name": name, "type": "image"}
+    _generation += 1
+    logger.info(
+        "Media selected: %s (type=image, gen=%d, path=%s)",
+        name,
+        _generation,
+        path,
+    )
+    return {"ok": True, "name": name, "generation": _generation}
+
+
 def _find_media_path(name: str) -> Optional[tuple[str, str]]:
-    """Resuelve `name` contra el allow-list. None si no matchea exactamente.
+    """Resuelve `name` contra el allow-list de imágenes. None si no matchea.
 
     Bloquea path traversal: solo se acepta un basename tal cual aparece en
-    `_list_media_items()` (mismo nombre físico presente en MEDIA_DIR).
+    `_list_media_items()` (mismo nombre físico presente en MEDIA_DIR/images).
     """
     if not name or os.path.basename(name) != name:
         return None
     for item in _list_media_items():
         if item["name"] == name:
-            subdir = MEDIA_VIDEO_SUBDIR if item["type"] == "video" else MEDIA_IMAGE_SUBDIR
-            return os.path.join(MEDIA_DIR, subdir, name), item["type"]
+            return os.path.join(MEDIA_DIR, MEDIA_IMAGE_SUBDIR, name), "image"
     return None
 
 
@@ -261,19 +348,58 @@ async def _sweeper_loop(stop: asyncio.Event) -> None:
             pass
 
 
+async def _media_watch_loop(stop: asyncio.Event) -> None:
+    """Auto-selecciona el JPG más nuevo al bootstrap o cuando la carpeta cambia.
+
+    Tras `POST /media/clear` no re-selecciona archivos ya vistos (queda RTSP)
+    hasta que aparezca/actualice un archivo nuevo.
+    """
+    global _media_seen_mtimes, _media_watch_bootstrapped
+
+    while not stop.is_set():
+        try:
+            current = _scan_media_mtimes()
+            if not _media_watch_bootstrapped:
+                _media_watch_bootstrapped = True
+                _media_seen_mtimes = dict(current)
+                if _current_media is None:
+                    newest = _pick_newest_name(current)
+                    if newest:
+                        _apply_media_selection(newest)
+                        logger.info("Media watch bootstrap -> %s", newest)
+            else:
+                changed = _media_changes_detected(_media_seen_mtimes, current)
+                _media_seen_mtimes = dict(current)
+                if changed:
+                    newest = _pick_newest_name(current)
+                    if newest:
+                        _apply_media_selection(newest)
+                        logger.info("Media watch change -> %s", newest)
+        except Exception as exc:
+            logger.warning("Media watch tick failed: %s", exc)
+
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=MEDIA_WATCH_INTERVAL)
+        except asyncio.TimeoutError:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     stop = asyncio.Event()
-    task = asyncio.create_task(_sweeper_loop(stop))
+    sweeper = asyncio.create_task(_sweeper_loop(stop))
+    watcher = asyncio.create_task(_media_watch_loop(stop))
     logger.info(
-        "Adapter started TTL=%.1fs buffer=%d vi_env=%s",
+        "Adapter started TTL=%.1fs buffer=%d vi_env=%s media_watch=%.1fs",
         TRACK_TTL_SECONDS,
         EVENTS_BUFFER_SIZE,
         VI_ENV,
+        MEDIA_WATCH_INTERVAL,
     )
     yield
     stop.set()
-    await task
+    await sweeper
+    await watcher
 
 
 app = FastAPI(
@@ -345,7 +471,11 @@ async def ingest(request: Request) -> JSONResponse:
         if det.get("finalized") or det.get("track_lost"):
             track_cache[str(track_id)].finalized = True
 
-    # Sweep inmediato de finalizados
+    # Foto activa: emitir ya (sin esperar TRACK_TTL de video en vivo).
+    if _current_media is not None:
+        for tid in list(track_cache.keys()):
+            track_cache[tid].finalized = True
+
     await _sweep_expired_tracks()
 
     return JSONResponse(
@@ -458,22 +588,121 @@ async def media_current() -> dict[str, Any]:
     }
 
 
+def _safe_upload_basename(original: str) -> Optional[str]:
+    """Basename seguro con extensión de imagen; None si inválido."""
+    if not original:
+        return None
+    base = os.path.basename(original.strip().replace("\\", "/"))
+    if not base or base in (".", "..") or os.path.basename(base) != base:
+        return None
+    stem, ext = os.path.splitext(base)
+    ext_l = ext.lower()
+    if ext_l not in MEDIA_IMAGE_EXTENSIONS:
+        return None
+    stem_safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "upload"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"{stamp}_{stem_safe}{ext_l}"
+
+
+def _remember_media_mtime(name: str) -> None:
+    """Actualiza el mapa del watcher tras un upload/select explícito."""
+    global _media_seen_mtimes
+    path = os.path.join(MEDIA_DIR, MEDIA_IMAGE_SUBDIR, name)
+    try:
+        _media_seen_mtimes[name] = os.path.getmtime(path)
+    except OSError:
+        pass
+
+
 @app.post("/media/select")
 async def media_select(body: MediaSelectBody) -> JSONResponse:
-    """Selecciona una muestra allow-listed; rechaza cualquier otra (LMP-1, LMP-2)."""
-    global _current_media, _generation
-
-    resolved = _find_media_path(body.name)
-    if resolved is None:
+    """Selecciona una foto allow-listed; rechaza video u otros nombres (LMP-1)."""
+    result = _apply_media_selection(body.name)
+    if result is None:
         return JSONResponse(
-            {"ok": False, "error": "name not allow-listed"}, status_code=400
+            {"ok": False, "error": "name not allow-listed (solo imagenes)"},
+            status_code=400,
+        )
+    return JSONResponse(result)
+
+
+@app.post("/media/upload")
+async def media_upload(file: UploadFile = File(...)) -> JSONResponse:
+    """Recibe una imagen, la guarda en MEDIA_DIR/images y la auto-selecciona.
+
+    Respuesta compatible con AMIS `input-file` (status/msg/data) y con clients
+    simples (`ok`/`name`/`generation`).
+    """
+    safe_name = _safe_upload_basename(file.filename or "")
+    if safe_name is None:
+        return JSONResponse(
+            {
+                "status": 1,
+                "msg": "solo se aceptan imagenes (.jpg/.jpeg/.png/.bmp)",
+                "ok": False,
+                "error": "solo se aceptan imagenes (.jpg/.jpeg/.png/.bmp)",
+            },
+            status_code=400,
         )
 
-    _, media_type = resolved
-    _current_media = {"name": body.name, "type": media_type}
-    _generation += 1
-    logger.info("Media selected: %s (type=%s, gen=%d)", body.name, media_type, _generation)
-    return JSONResponse({"ok": True, "name": body.name, "generation": _generation})
+    folder = os.path.join(MEDIA_DIR, MEDIA_IMAGE_SUBDIR)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as exc:
+        logger.error("Cannot create media folder %s: %s", folder, exc)
+        return JSONResponse(
+            {"status": 1, "msg": "no se pudo guardar", "ok": False, "error": str(exc)},
+            status_code=500,
+        )
+
+    dest = os.path.join(folder, safe_name)
+    try:
+        data = await file.read()
+        if not data:
+            return JSONResponse(
+                {
+                    "status": 1,
+                    "msg": "archivo vacio",
+                    "ok": False,
+                    "error": "archivo vacio",
+                },
+                status_code=400,
+            )
+        with open(dest, "wb") as fh:
+            fh.write(data)
+    except OSError as exc:
+        logger.error("Upload write failed %s: %s", dest, exc)
+        return JSONResponse(
+            {"status": 1, "msg": "no se pudo guardar", "ok": False, "error": str(exc)},
+            status_code=500,
+        )
+    finally:
+        await file.close()
+
+    _remember_media_mtime(safe_name)
+    result = _apply_media_selection(safe_name)
+    if result is None:
+        return JSONResponse(
+            {
+                "status": 1,
+                "msg": "guardado pero no seleccionable",
+                "ok": False,
+                "error": "guardado pero no seleccionable",
+            },
+            status_code=500,
+        )
+
+    logger.info("Media uploaded: %s gen=%d", safe_name, result["generation"])
+    return JSONResponse(
+        {
+            "status": 0,
+            "msg": "",
+            "ok": True,
+            "name": safe_name,
+            "generation": result["generation"],
+            "data": {"value": safe_name, "name": safe_name},
+        }
+    )
 
 
 @app.post("/media/clear")
@@ -481,6 +710,7 @@ async def media_clear() -> JSONResponse:
     """Quita la muestra local: el bridge vuelve a RTSP_URL / SOURCE_URL (vivo)."""
     global _current_media, _generation
 
+    _flush_detection_session()
     _current_media = None
     _generation += 1
     logger.info("Media cleared (gen=%d) — bridge should fall back to RTSP/SOURCE_URL", _generation)
