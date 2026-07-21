@@ -16,12 +16,14 @@ Flujo:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -33,11 +35,28 @@ from pydantic import BaseModel, Field
 
 from adapter.epp_core import PerceptionEvent
 
-logger = logging.getLogger("adapter")
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+# ContextVar para correlacionar logs de ingest/sweep con un trace_id corto.
+_trace_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "trace_id", default=None
 )
+
+
+class _TraceIdFilter(logging.Filter):
+    """Inyecta record.trace_id para el format string (vacío si no hay)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        tid = _trace_id_var.get()
+        record.trace_id = f"trace_id={tid} " if tid is not None else ""  # type: ignore[attr-defined]
+        return True
+
+
+logger = logging.getLogger("adapter")
+_handler = logging.StreamHandler()
+_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(trace_id)s%(message)s")
+)
+_handler.addFilter(_TraceIdFilter())
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), handlers=[_handler], force=True)
 
 # --- Configuración vía entorno (portable edge / docker) ---
 TRACK_TTL_SECONDS = float(os.getenv("TRACK_TTL_SECONDS", "10"))
@@ -87,19 +106,37 @@ class TrackBucket(BaseModel):
     finalized: bool = False
 
 
-# Estado en proceso (delgado; mañana en edge = mismo dict)
-track_cache: dict[str, TrackBucket] = {}
-events_buffer: deque[dict[str, Any]] = deque(maxlen=EVENTS_BUFFER_SIZE)
-_stats = {"ingested": 0, "emitted": 0, "paddlex_degraded": False}
+@dataclass
+class AppState:
+    """Estado mutable del proceso, inyectado en lifespan."""
 
-# Estado de la muestra activa + último JPEG de preview (overlay EN).
-_current_media: Optional[dict[str, str]] = None
-_generation: int = 0
-_latest_frame: Optional[bytes] = None
-_frame_lock = asyncio.Lock()
-# Watcher de carpeta: mtimes conocidos (basename → mtime). Bootstrap al 1er tick.
-_media_seen_mtimes: dict[str, float] = {}
-_media_watch_bootstrapped: bool = False
+    track_cache: dict[str, TrackBucket] = field(default_factory=dict)
+    events_buffer: deque[dict[str, Any]] = field(
+        default_factory=lambda: deque(maxlen=EVENTS_BUFFER_SIZE)
+    )
+    stats: dict[str, Any] = field(
+        default_factory=lambda: {
+            "ingested": 0,
+            "emitted": 0,
+            "paddlex_degraded": False,
+        }
+    )
+    current_media: Optional[dict[str, str]] = None
+    generation: int = 0
+    latest_frame: Optional[bytes] = None
+    frame_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    media_seen_mtimes: dict[str, float] = field(default_factory=dict)
+    media_watch_bootstrapped: bool = False
+
+
+_app_state: Optional[AppState] = None
+
+
+def state() -> AppState:
+    """Devuelve el AppState activo; falla si lifespan aún no arrancó."""
+    if _app_state is None:
+        raise RuntimeError("AppState not started")
+    return _app_state
 
 
 def _load_placeholder_jpeg() -> bytes:
@@ -116,8 +153,6 @@ def _load_placeholder_jpeg() -> bytes:
 
 
 _PLACEHOLDER_JPEG = _load_placeholder_jpeg()
-if _PLACEHOLDER_JPEG:
-    _latest_frame = _PLACEHOLDER_JPEG
 
 
 def _list_media_items() -> list[dict[str, str]]:
@@ -179,21 +214,19 @@ def _media_changes_detected(
 
 def _flush_detection_session() -> None:
     """Limpia buffer/tracks y deja el preview en el placeholder de marca."""
-    global _latest_frame
-
-    events_buffer.clear()
-    track_cache.clear()
-    _stats["ingested"] = 0
-    _stats["emitted"] = 0
-    _stats["paddlex_degraded"] = False
+    st = state()
+    st.events_buffer.clear()
+    st.track_cache.clear()
+    st.stats["ingested"] = 0
+    st.stats["emitted"] = 0
+    st.stats["paddlex_degraded"] = False
     # Empuja marca al MJPEG: si queda None el browser conserva el último frame.
-    _latest_frame = _PLACEHOLDER_JPEG or None
+    st.latest_frame = _PLACEHOLDER_JPEG or None
 
 
 def _apply_media_selection(name: str) -> Optional[dict[str, Any]]:
     """Selecciona foto allow-listed; bump generation. None si inválida."""
-    global _current_media, _generation
-
+    st = state()
     resolved = _find_media_path(name)
     if resolved is None:
         return None
@@ -201,15 +234,16 @@ def _apply_media_selection(name: str) -> Optional[dict[str, Any]]:
     if media_type != "image":
         return None
     _flush_detection_session()
-    _current_media = {"name": name, "type": "image"}
-    _generation += 1
+    st.current_media = {"name": name, "type": "image"}
+    st.generation += 1
     logger.info(
-        "Media selected: %s (type=image, gen=%d, path=%s)",
+        "Media selected: %s (type=image, gen=%d, path=%s) trace_id=%s",
         name,
-        _generation,
+        st.generation,
         path,
+        st.generation,
     )
-    return {"ok": True, "name": name, "generation": _generation}
+    return {"ok": True, "name": name, "generation": st.generation}
 
 
 def _find_media_path(name: str) -> Optional[tuple[str, str]]:
@@ -256,10 +290,11 @@ def _extract_detections(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _append_to_track(track_id: str, detection: dict[str, Any]) -> None:
     """Agrega detección al caché del track; respeta soft-cap y refresca TTL."""
-    bucket = track_cache.get(track_id)
+    cache = state().track_cache
+    bucket = cache.get(track_id)
     if bucket is None:
         bucket = TrackBucket()
-        track_cache[track_id] = bucket
+        cache[track_id] = bucket
 
     if bucket.finalized:
         return
@@ -278,14 +313,15 @@ def _flush_track(track_id: str) -> list[PerceptionEvent]:
 
     No confundir con `epp_core._emit_track`, que arma el payload por entity_type.
     """
-    bucket = track_cache.pop(track_id, None)
+    st = state()
+    bucket = st.track_cache.pop(track_id, None)
     if bucket is None or not bucket.detections:
         return []
 
     events = PerceptionEvent.consolidate_and_emit(bucket.detections)
     for event in events:
-        events_buffer.appendleft(event.model_dump(mode="json"))
-        _stats["emitted"] += 1
+        st.events_buffer.appendleft(event.model_dump(mode="json"))
+        st.stats["emitted"] += 1
         logger.info(
             "Emitted PerceptionEvent track=%s candidates=%s conf=%.3f",
             track_id,
@@ -333,9 +369,10 @@ async def _forward_to_jetlinks(events: list[PerceptionEvent]) -> None:
 async def _sweep_expired_tracks() -> None:
     """Emite tracks cuyo TTL expiró o están marcados finalizados."""
     now = time.monotonic()
+    cache = state().track_cache
     expired = [
         tid
-        for tid, bucket in track_cache.items()
+        for tid, bucket in cache.items()
         if bucket.finalized or (now - bucket.last_seen) >= TRACK_TTL_SECONDS
     ]
     for tid in expired:
@@ -361,22 +398,21 @@ async def _media_watch_loop(stop: asyncio.Event) -> None:
     Tras `POST /media/clear` no re-selecciona archivos ya vistos (queda idle)
     hasta que aparezca/actualice un archivo nuevo.
     """
-    global _media_seen_mtimes, _media_watch_bootstrapped
-
     while not stop.is_set():
         try:
+            st = state()
             current = _scan_media_mtimes()
-            if not _media_watch_bootstrapped:
-                _media_watch_bootstrapped = True
-                _media_seen_mtimes = dict(current)
-                if _current_media is None:
+            if not st.media_watch_bootstrapped:
+                st.media_watch_bootstrapped = True
+                st.media_seen_mtimes = dict(current)
+                if st.current_media is None:
                     newest = _pick_newest_name(current)
                     if newest:
                         _apply_media_selection(newest)
                         logger.info("Media watch bootstrap -> %s", newest)
             else:
-                changed = _media_changes_detected(_media_seen_mtimes, current)
-                _media_seen_mtimes = dict(current)
+                changed = _media_changes_detected(st.media_seen_mtimes, current)
+                st.media_seen_mtimes = dict(current)
                 if changed:
                     newest = _pick_newest_name(current)
                     if newest:
@@ -393,6 +429,12 @@ async def _media_watch_loop(stop: asyncio.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global _app_state
+    st = AppState()
+    if _PLACEHOLDER_JPEG:
+        st.latest_frame = _PLACEHOLDER_JPEG
+    _app_state = st
+
     stop = asyncio.Event()
     sweeper = asyncio.create_task(_sweeper_loop(stop))
     watcher = asyncio.create_task(_media_watch_loop(stop))
@@ -403,10 +445,13 @@ async def lifespan(_app: FastAPI):
         VI_ENV,
         MEDIA_WATCH_INTERVAL,
     )
-    yield
-    stop.set()
-    await sweeper
-    await watcher
+    try:
+        yield
+    finally:
+        stop.set()
+        await sweeper
+        await watcher
+        _app_state = None
 
 
 app = FastAPI(
@@ -431,11 +476,12 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict[str, Any]:
     """Healthcheck para Docker Compose."""
+    st = state()
     return {
         "status": "ok",
-        "tracks_active": len(track_cache),
-        "events_buffered": len(events_buffer),
-        "paddlex_degraded": _stats["paddlex_degraded"],
+        "tracks_active": len(st.track_cache),
+        "events_buffered": len(st.events_buffer),
+        "paddlex_degraded": st.stats["paddlex_degraded"],
         "vi_env": VI_ENV,
         "utc": datetime.now(timezone.utc).isoformat(),
     }
@@ -447,7 +493,7 @@ async def ingest(request: Request) -> JSONResponse:
     Recibe detecciones JSON de PaddleX (vía bridge) y las agrega al track_cache.
 
     Emisión (dos caminos, ambos pasan por `_sweep_expired_tracks` → `_flush_track`):
-    - Foto activa (`_current_media`): marca todos los tracks finalized y barre al
+    - Foto activa (`current_media`): marca todos los tracks finalized y barre al
       instante (sin esperar TRACK_TTL). Es el camino del modo foto-only actual.
     - Sin foto / video futuro: el loop `_sweeper_loop` emite cuando expira el TTL
       o cuando una det marca `finalized`/`track_lost`. No es código muerto.
@@ -463,43 +509,61 @@ async def ingest(request: Request) -> JSONResponse:
         else:
             return JSONResponse({"ok": False, "error": "expected object"}, status_code=400)
 
-    # Señal de degradación desde el bridge
-    if body.get("degraded") is True:
-        _stats["paddlex_degraded"] = True
-        return JSONResponse({"ok": True, "degraded": True, "accepted": 0})
+    raw_trace = body.get("trace_id", body.get("generation"))
+    trace_id = None if raw_trace is None else str(raw_trace)
+    token = _trace_id_var.set(trace_id)
+    try:
+        st = state()
 
-    detections = _extract_detections(body)
-    if not detections:
-        return JSONResponse({"ok": True, "accepted": 0, "message": "no detections"})
+        # Señal de degradación desde el bridge
+        if body.get("degraded") is True:
+            st.stats["paddlex_degraded"] = True
+            return JSONResponse(
+                {"ok": True, "degraded": True, "accepted": 0, "trace_id": trace_id}
+            )
 
-    _stats["paddlex_degraded"] = False
-    accepted = 0
-    for det in detections:
-        track_id = det.get("track_id") or det.get("tracker_id")
-        if track_id is None:
-            continue
-        _append_to_track(str(track_id), det)
-        accepted += 1
-        _stats["ingested"] += 1
+        detections = _extract_detections(body)
+        if not detections:
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "accepted": 0,
+                    "message": "no detections",
+                    "trace_id": trace_id,
+                }
+            )
 
-        # Finalización explícita (PaddleX / bridge puede marcar lost track)
-        if det.get("finalized") or det.get("track_lost"):
-            track_cache[str(track_id)].finalized = True
+        st.stats["paddlex_degraded"] = False
+        accepted = 0
+        for det in detections:
+            track_id = det.get("track_id") or det.get("tracker_id")
+            if track_id is None:
+                continue
+            _append_to_track(str(track_id), det)
+            accepted += 1
+            st.stats["ingested"] += 1
 
-    # Foto activa: emitir ya (sin esperar TRACK_TTL).
-    if _current_media is not None:
-        for tid in list(track_cache.keys()):
-            track_cache[tid].finalized = True
+            # Finalización explícita (PaddleX / bridge puede marcar lost track)
+            if det.get("finalized") or det.get("track_lost"):
+                st.track_cache[str(track_id)].finalized = True
 
-    await _sweep_expired_tracks()
+        # Foto activa: emitir ya (sin esperar TRACK_TTL).
+        if st.current_media is not None:
+            for tid in list(st.track_cache.keys()):
+                st.track_cache[tid].finalized = True
 
-    return JSONResponse(
-        {
-            "ok": True,
-            "accepted": accepted,
-            "tracks_active": len(track_cache),
-        }
-    )
+        await _sweep_expired_tracks()
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "accepted": accepted,
+                "tracks_active": len(st.track_cache),
+                "trace_id": trace_id,
+            }
+        )
+    finally:
+        _trace_id_var.reset(token)
 
 
 @app.get("/events")
@@ -511,8 +575,9 @@ async def get_events(limit: int = 100, plate: Optional[str] = None) -> dict[str,
     comportamiento exacto previo. Distinto del matching `patente:` de
     rules-sink (candidate_ids) — no son intercambiables.
     """
+    st = state()
     limit = max(1, min(limit, EVENTS_BUFFER_SIZE))
-    source = list(events_buffer)
+    source = list(st.events_buffer)
     if plate:
         needle = plate.lower()
         source = [
@@ -523,9 +588,9 @@ async def get_events(limit: int = 100, plate: Optional[str] = None) -> dict[str,
     items = source[:limit]
     return {
         "count": len(items),
-        "total_emitted": _stats["emitted"],
-        "tracks_active": len(track_cache),
-        "degraded": _stats["paddlex_degraded"],
+        "total_emitted": st.stats["emitted"],
+        "tracks_active": len(st.track_cache),
+        "degraded": st.stats["paddlex_degraded"],
         "events": items,
     }
 
@@ -594,12 +659,13 @@ async def media_list() -> dict[str, Any]:
 @app.get("/media/current")
 async def media_current() -> dict[str, Any]:
     """Fuente activa actual + token de generación (LMP-2)."""
-    if _current_media is None:
-        return {"name": None, "type": None, "generation": _generation}
+    st = state()
+    if st.current_media is None:
+        return {"name": None, "type": None, "generation": st.generation}
     return {
-        "name": _current_media["name"],
-        "type": _current_media["type"],
-        "generation": _generation,
+        "name": st.current_media["name"],
+        "type": st.current_media["type"],
+        "generation": st.generation,
     }
 
 
@@ -621,10 +687,9 @@ def _safe_upload_basename(original: str) -> Optional[str]:
 
 def _remember_media_mtime(name: str) -> None:
     """Actualiza el mapa del watcher tras un upload/select explícito."""
-    global _media_seen_mtimes
     path = os.path.join(MEDIA_DIR, MEDIA_IMAGE_SUBDIR, name)
     try:
-        _media_seen_mtimes[name] = os.path.getmtime(path)
+        state().media_seen_mtimes[name] = os.path.getmtime(path)
     except OSError:
         pass
 
@@ -707,7 +772,12 @@ async def media_upload(file: UploadFile = File(...)) -> JSONResponse:
             status_code=500,
         )
 
-    logger.info("Media uploaded: %s gen=%d", safe_name, result["generation"])
+    logger.info(
+        "Media uploaded: %s gen=%d trace_id=%s",
+        safe_name,
+        result["generation"],
+        result["generation"],
+    )
     return JSONResponse(
         {
             "status": 0,
@@ -723,37 +793,40 @@ async def media_upload(file: UploadFile = File(...)) -> JSONResponse:
 @app.post("/media/clear")
 async def media_clear() -> JSONResponse:
     """Quita la foto activa: el bridge pasa a idle hasta la próxima selección."""
-    global _current_media, _generation
-
+    st = state()
     _flush_detection_session()
-    _current_media = None
-    _generation += 1
-    logger.info("Media cleared (gen=%d) — bridge idle until next photo", _generation)
-    return JSONResponse({"ok": True, "name": None, "generation": _generation})
+    st.current_media = None
+    st.generation += 1
+    logger.info(
+        "Media cleared (gen=%d) — bridge idle until next photo trace_id=%s",
+        st.generation,
+        st.generation,
+    )
+    return JSONResponse({"ok": True, "name": None, "generation": st.generation})
 
 
 @app.post("/preview/frame")
 async def preview_frame(request: Request) -> JSONResponse:
     """Recibe el JPEG anotado del bridge y lo guarda como último frame (D1)."""
-    global _latest_frame
-
+    st = state()
     body = await request.body()
     if not body:
         return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
 
-    async with _frame_lock:
-        _latest_frame = body
+    async with st.frame_lock:
+        st.latest_frame = body
     return JSONResponse({"ok": True})
 
 
 async def _mjpeg_frames(request: Request):
     """Generador multipart/x-mixed-replace: reemite el último frame disponible."""
     boundary = b"--frame"
+    st = state()
     while True:
         if await request.is_disconnected():
             break
-        async with _frame_lock:
-            frame = _latest_frame
+        async with st.frame_lock:
+            frame = st.latest_frame
         if frame is None:
             await asyncio.sleep(PREVIEW_MJPEG_INTERVAL)
             continue
@@ -780,8 +853,9 @@ async def preview_mjpg(request: Request) -> StreamingResponse:
 @app.get("/preview.jpg")
 async def preview_jpg() -> Response:
     """Único frame anotado más reciente, para foto (LMP-3)."""
-    async with _frame_lock:
-        frame = _latest_frame
+    st = state()
+    async with st.frame_lock:
+        frame = st.latest_frame
     if frame is None:
         return Response(status_code=503, content=b"", media_type="image/jpeg")
     return Response(content=frame, media_type="image/jpeg")
