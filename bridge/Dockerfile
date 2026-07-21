@@ -3,24 +3,23 @@ FROM python:3.10-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp
+    PYTHONPATH=/app
 
 WORKDIR /app
 
-# OpenCV headless + libs mínimas de vídeo
+# OpenCV headless + libs mínimas para imread/overlay (sin ffmpeg).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
         libsm6 \
         libxext6 \
-        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-bridge.txt /app/requirements-bridge.txt
-# --no-cache-dir + require-hashes off: evita mismatch por cache intermediario
+COPY bridge/requirements.txt /app/requirements-bridge.txt
 ENV PIP_REQUIRE_HASHES=0
 RUN pip install --no-cache-dir --retries 10 -r /app/requirements-bridge.txt
 
-COPY rtsp_bridge.py /app/rtsp_bridge.py
+COPY detection/ /app/detection/
+COPY bridge/ /app/bridge/
 
-CMD ["python", "rtsp_bridge.py"]
+CMD ["python", "-m", "bridge.main"]

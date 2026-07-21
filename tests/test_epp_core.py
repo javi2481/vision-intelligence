@@ -1,13 +1,13 @@
-"""Test standalone (stdlib unittest) para epp_core.py (contrato PerceptionEvent).
+"""Test standalone para adapter.epp_core (contrato PerceptionEvent).
 
-No forma parte de CI. Ejecutar manualmente:
+Ejecutar desde la raíz del repo:
 
-    python test_epp_core.py
+    PYTHONPATH=. python3 tests/test_epp_core.py
 """
 
 import unittest
 
-from epp_core import PerceptionEvent, _normalize_detection
+from adapter.epp_core import PerceptionEvent, _normalize_detection
 
 
 class NormalizeDetectionEntityTypeTests(unittest.TestCase):

@@ -1,6 +1,8 @@
 """Tests stdlib para helpers de auto-select por mtime (adapter).
 
-Ejecutar: python test_adapter_media.py
+Ejecutar desde la raíz del repo:
+
+    PYTHONPATH=. python3 tests/test_adapter_media.py
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import re
 import tempfile
 import unittest
 
-import adapter as ad
+import adapter.app as ad
 
 
 class PickNewestNameTests(unittest.TestCase):

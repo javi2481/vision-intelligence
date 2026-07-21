@@ -8,6 +8,5 @@ venv/
 .DS_Store
 *.log
 
-# Muestras locales de video/imagen (overlay-preview) — pesadas, no versionar.
-videos_muestra/
+# Muestras locales de imagen (overlay-preview) — pesadas, no versionar.
 imagenes_muestra/

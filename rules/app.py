@@ -1,14 +1,12 @@
 """
-rules-sink — capa de reglas headless (Vision Intelligence, EPP v4.6 Punto 12).
+rules-sink — capa de reglas headless (perfil Compose `rules`).
 
-Responsabilidad: recibir PerceptionEvent(s) reenviados por el adaptador
-(`adapter._forward_to_jetlinks`), evaluar la regla MVP de alerta y exponer
-las alertas resultantes para inspección/smoke-test.
+Responsabilidad: recibir PerceptionEvent(s) reenviados por el adapter,
+evaluar la regla MVP de alerta y exponer alertas para inspección.
 
-NO importa epp_core.py (imagen liviana, sin cv2/httpx): define su propio
-modelo Pydantic permisivo (`extra="ignore"`) con solo los campos que la
-regla necesita. NO decide sobre el adaptador ni epp_core (Punto 12): la
-regla vive únicamente en este archivo.
+NO importa adapter.epp_core (imagen liviana): define su propio modelo
+Pydantic permisivo (`extra="ignore"`) con solo los campos que la regla
+necesita. La regla vive únicamente en este archivo.
 
 Flujo:
   POST /webhook/events → [PerceptionEvent] → evaluar regla → guardar alerta

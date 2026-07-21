@@ -1,8 +1,10 @@
 """
-Adaptador FastAPI — única pieza de código propio (Vision Intelligence Sprint 1).
+Adaptador FastAPI — media, ingest, consolidación y UI estática.
 
-Responsabilidad: normalizar detecciones PaddleX → PerceptionEvent (epp-core).
-NO decide reglas de negocio (JetLinks) ni renderiza UI (AMIS).
+Responsabilidad: normalizar detecciones (vehicles/objects/plates vía bridge)
+→ PerceptionEvent (epp_core). Sirve el panel AMIS desde adapter/ui/.
+
+NO decide reglas de negocio (JetLinks/rules) ni corre inferencia PaddleX.
 
 Flujo:
   POST /ingest  → acumula por track_id en track_cache (TTL)
@@ -29,7 +31,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from epp_core import PerceptionEvent
+from adapter.epp_core import PerceptionEvent
 
 logger = logging.getLogger("adapter")
 logging.basicConfig(
@@ -44,7 +46,9 @@ EVENTS_BUFFER_SIZE = int(os.getenv("EVENTS_BUFFER_SIZE", "500"))
 SWEEP_INTERVAL_SECONDS = float(os.getenv("SWEEP_INTERVAL_SECONDS", "1.0"))
 JETLINKS_WEBHOOK_URL = os.getenv("JETLINKS_WEBHOOK_URL", "")  # vacío = modo MVP local
 JETLINKS_API_KEY = os.getenv("JETLINKS_API_KEY", "demo")
-STATIC_DIR = os.getenv("STATIC_DIR", os.path.dirname(os.path.abspath(__file__)))
+# UI estática vive en adapter/ui/ (dashboard, AMIS schema, placeholder).
+_DEFAULT_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+STATIC_DIR = os.getenv("STATIC_DIR", _DEFAULT_STATIC)
 RULES_SINK_URL = os.getenv("RULES_SINK_URL", "http://rules-sink:8850")
 VI_ENV = os.getenv("VI_ENV", "development").strip().lower()
 
@@ -351,7 +355,7 @@ async def _sweeper_loop(stop: asyncio.Event) -> None:
 async def _media_watch_loop(stop: asyncio.Event) -> None:
     """Auto-selecciona el JPG más nuevo al bootstrap o cuando la carpeta cambia.
 
-    Tras `POST /media/clear` no re-selecciona archivos ya vistos (queda RTSP)
+    Tras `POST /media/clear` no re-selecciona archivos ya vistos (queda idle)
     hasta que aparezca/actualice un archivo nuevo.
     """
     global _media_seen_mtimes, _media_watch_bootstrapped
@@ -471,7 +475,7 @@ async def ingest(request: Request) -> JSONResponse:
         if det.get("finalized") or det.get("track_lost"):
             track_cache[str(track_id)].finalized = True
 
-    # Foto activa: emitir ya (sin esperar TRACK_TTL de video en vivo).
+    # Foto activa: emitir ya (sin esperar TRACK_TTL).
     if _current_media is not None:
         for tid in list(track_cache.keys()):
             track_cache[tid].finalized = True
@@ -707,13 +711,13 @@ async def media_upload(file: UploadFile = File(...)) -> JSONResponse:
 
 @app.post("/media/clear")
 async def media_clear() -> JSONResponse:
-    """Quita la muestra local: el bridge vuelve a RTSP_URL / SOURCE_URL (vivo)."""
+    """Quita la foto activa: el bridge pasa a idle hasta la próxima selección."""
     global _current_media, _generation
 
     _flush_detection_session()
     _current_media = None
     _generation += 1
-    logger.info("Media cleared (gen=%d) — bridge should fall back to RTSP/SOURCE_URL", _generation)
+    logger.info("Media cleared (gen=%d) — bridge idle until next photo", _generation)
     return JSONResponse({"ok": True, "name": None, "generation": _generation})
 
 
@@ -755,7 +759,7 @@ async def _mjpeg_frames(request: Request):
 
 @app.get("/preview.mjpg")
 async def preview_mjpg(request: Request) -> StreamingResponse:
-    """Stream MJPEG del preview anotado, para video (LMP-3, D2)."""
+    """Stream MJPEG del preview anotado (heartbeat de la foto activa)."""
     return StreamingResponse(
         _mjpeg_frames(request),
         media_type="multipart/x-mixed-replace; boundary=frame",

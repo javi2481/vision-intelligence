@@ -1,24 +1,23 @@
 """
 epp-core draft contract (schema_version=\"1.0-draft\").
 
-Contrato sagrado del Producto B — Vision Intelligence (EPP v4.6, Punto 12).
-Única pieza portable: entra un dict (detección PaddleX), sale un PerceptionEvent.
+Ubicación: adapter/epp_core.py — contrato portable del Producto B
+(Vision Intelligence, EPP v4.6 Punto 12).
+
+Única pieza portable: entra un dict (detección del bridge), sale un PerceptionEvent.
 Sin lógica de reglas de negocio; solo normalización y consolidación de tracks.
 
-Asumción del JSON PaddleX vehicle_attribute_recognition (por detección)::
+Asumción del JSON de detección (por ítem)::
 
     {
-      \"track_id\": \"42\",           # o int; se normaliza a str
-      \"label\": \"car\",             # vehicle_type
-      \"score\": 0.91,              # confianza de detección [0,1]
+      \"track_id\": \"v-42\",         # o \"o-1\" para objects
+      \"label\": \"car\",             # vehicle_type o class_name COCO
+      \"score\": 0.91,
       \"bbox\": [x1, y1, x2, y2],
-      \"color\": \"white\",           # atributo de vehículo (opcional)
-      \"plate\": {                  # lectura de patente (opcional)
-        \"text\": \"ABC123\",
-        \"score\": 0.87
-      },
-      \"speed_kmh\": 45.2,          # opcional (radar / estimación)
-      \"frame_ts\": \"2026-07-18T15:00:00.123Z\"  # opcional ISO-8601
+      \"color\": \"white\",           # opcional (vehicles)
+      \"plate\": {\"text\": \"ABC123\", \"score\": 0.87},  # opcional
+      \"entity_type\": \"vehicle\",   # o \"object\"
+      \"frame_ts\": \"2026-07-18T15:00:00.123Z\"
     }
 
 Variantes aceptadas: plate_text/plate_score en raíz, conf/confidence
@@ -54,7 +53,7 @@ class VehiclePayload(BaseModel):
     """Payload tipado de la entidad consolidada (pistas, no veredictos).
 
     Nombre histórico ("Vehicle...") preservado para no romper referencias en
-    adapter.py y el dashboard; el field set ahora cubre también entidades
+    adapter/app.py y el dashboard; el field set ahora cubre también entidades
     `entity_type="object"` (COCO, object_detection) vía `class_name`.
     """
 
@@ -224,7 +223,7 @@ def _emit_track(
     `entity_type` se deriva de las detecciones del track (primera detección
     no-nula; en la práctica todo un track comparte entity_type, ya que
     vehicle y object_detection usan trackers e IDs con prefijo separados
-    "v-"/"o-" en rtsp_bridge.py). Para `entity_type == "object"` se vota
+    "v-"/"o-" en detection/vehicles y detection/objects). Para `entity_type == "object"` se vota
     `class_name` (la label COCO) en vez de `color`/`plate_text`, y se omite
     el boost de confianza por patente (concepto propio de vehículos).
     """

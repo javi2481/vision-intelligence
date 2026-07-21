@@ -171,9 +171,8 @@
       const res = await fetch('/static/amis_dashboard.json');
       const schema = await res.json();
       const amis = amisRequire('amis/embed');
-      const hlsUrl = `http://${window.location.hostname}:8888/webcam`;
       // locale en props (3er arg): sin esto AMIS muestra UI en chino.
-      amis.embed('#root', schema, { hlsUrl: hlsUrl, locale: 'en-US' }, {
+      amis.embed('#root', schema, { locale: 'en-US' }, {
         theme: 'cxd',
         updateLocation: function () {},
         notify: function (type, msg) { console.log('[amis]', type, msg); }

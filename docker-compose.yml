@@ -1,11 +1,14 @@
-# Vision Intelligence — Sprint 1 (Producto B / EPP v4.6 Punto 12)
+# Vision Intelligence — foto-only (Producto B / EPP v4.6 Punto 12)
 # Orquestar, no inventar. Un solo comando: docker compose up --build
 #
 # Perfiles:
-#   (default)  mediamtx + paddlex + adapter + bridge
-#   --profile demo   → bridge en DEMO_MODE (sin webcam/GPU)
+#   (default)  paddlex + paddlex-objects + paddlex-ocr + adapter + bridge
+#   --profile demo   → bridge en DEMO_MODE (sin fotos/GPU)
 #   --profile rules  → JetLinks opcional
 #   --profile gpu    → PaddleX con runtime NVIDIA (requiere NVIDIA Container Toolkit)
+#
+# Layout de código: detection/{vehicles,objects,plates} + bridge + adapter + rules.
+# Ver README.md (mapa carpeta ↔ capacidad ↔ servicio).
 
 name: vision-intelligence
 
@@ -21,28 +24,10 @@ networks:
     driver: bridge
 
 services:
-  mediamtx:
-    image: bluenviron/mediamtx:latest
-    container_name: vi-mediamtx
-    restart: unless-stopped
-    ports:
-      - "${MEDIAMTX_RTSP_PORT:-8554}:8554"
-      - "${MEDIAMTX_HLS_PORT:-8888}:8888"
-      - "${MEDIAMTX_WEBRTC_PORT:-8889}:8889"
-      - "${MEDIAMTX_API_PORT:-9997}:9997"
-    volumes:
-      - ./mediamtx.yml:/mediamtx.yml:ro
-    environment:
-      MTX_LOGLEVEL: info
-    networks:
-      - epp-network
-    # Imagen distroless: sin /bin/sh ni wget → no healthcheck in-container
-    logging: *default-logging
-
   paddlex:
     build:
       context: .
-      dockerfile: Dockerfile.paddlex
+      dockerfile: infra/Dockerfile.paddlex
       args:
         BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
     image: vision-intelligence/paddlex:local
@@ -52,10 +37,8 @@ services:
       - "${PADDLEX_PORT:-8080}:8080"
     environment:
       - PYTHONUNBUFFERED=1
-      # Tras benchmark HPIP ≥~1.5×: VI_USE_HPIP=1 (ver entrypoint.paddlex.sh)
       - VI_USE_HPIP=${VI_USE_HPIP:-0}
     volumes:
-      # Cache de modelos entre reinicios
       - paddlex-models:/root/.paddlex
     networks:
       - epp-network
@@ -67,12 +50,10 @@ services:
       start_period: 300s
     logging: *default-logging
 
-  # OCR de patente: misma imagen Dockerfile.paddlex, pipeline OCR, puerto propio.
-  # Independiente del servicio paddlex (attr) — caída de uno no afecta al otro.
   paddlex-ocr:
     build:
       context: .
-      dockerfile: Dockerfile.paddlex
+      dockerfile: infra/Dockerfile.paddlex
       args:
         BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
     image: vision-intelligence/paddlex-ocr:local
@@ -82,12 +63,9 @@ services:
       - "${PADDLEX_OCR_PORT:-8081}:8081"
     environment:
       - PYTHONUNBUFFERED=1
-      # Pineado a PP-OCRv5 (mobile) via config propio: el pipeline "OCR" por
-      # nombre carga PP-OCRv6 por default, incompatible con paddle:3.0.0 (PIR).
       - VI_PIPELINE=${OCR_PIPELINE_CONFIG:-/opt/paddlex/pipelines/ocr_v5_mobile.yaml}
       - VI_PORT=8081
     volumes:
-      # Cache de modelos OCR independiente del cache de attr
       - paddlex-ocr-models:/root/.paddlex
     networks:
       - epp-network
@@ -99,15 +77,11 @@ services:
       start_period: 300s
     logging: *default-logging
 
-  # Object detection general (COCO, 80 clases): misma imagen Dockerfile.paddlex,
-  # pipeline object_detection, puerto propio. Aditivo al pipeline vehicle attr
-  # (paddlex arriba) — corren ambos sobre cada foto y se mergean en el bridge
-  # (ver _run_detections/_merge_object_detections en rtsp_bridge.py). Caída de
-  # uno no afecta al otro.
+  # Object detection COCO (person, dog, …). Merge en detection/objects.
   paddlex-objects:
     build:
       context: .
-      dockerfile: Dockerfile.paddlex
+      dockerfile: infra/Dockerfile.paddlex
       args:
         BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
     image: vision-intelligence/paddlex-objects:local
@@ -120,7 +94,6 @@ services:
       - VI_PIPELINE=object_detection
       - VI_PORT=8082
     volumes:
-      # Cache de modelos object_detection independiente del cache de attr/OCR
       - paddlex-objects-models:/root/.paddlex
     networks:
       - epp-network
@@ -132,12 +105,11 @@ services:
       start_period: 300s
     logging: *default-logging
 
-  # Variante GPU (activar: docker compose --profile gpu up --build)
   paddlex-gpu:
     profiles: ["gpu"]
     build:
       context: .
-      dockerfile: Dockerfile.paddlex
+      dockerfile: infra/Dockerfile.paddlex
       args:
         BASE_IMAGE: ${PADDLE_GPU_BASE_IMAGE:-paddlepaddle/paddle:3.0.0-gpu-cuda11.8-cudnn8.9-trt8.6}
         DEVICE: gpu
@@ -165,7 +137,7 @@ services:
   adapter:
     build:
       context: .
-      dockerfile: Dockerfile.adapter
+      dockerfile: adapter/Dockerfile
     image: vision-intelligence/adapter:local
     container_name: vi-adapter
     restart: unless-stopped
@@ -181,19 +153,14 @@ services:
       - JETLINKS_API_KEY=${JETLINKS_API_KEY:-demo}
       - RULES_SINK_URL=${RULES_SINK_URL:-http://rules-sink:8850}
       - VI_ENV=${VI_ENV:-development}
-      - STATIC_DIR=/app
+      - STATIC_DIR=/app/adapter/ui
+      - PYTHONPATH=/app
       - MEDIA_DIR=${MEDIA_DIR:-/media}
       - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
       - MEDIA_WATCH_INTERVAL=${MEDIA_WATCH_INTERVAL:-1.0}
       - PREVIEW_MJPEG_INTERVAL=${PREVIEW_MJPEG_INTERVAL:-0.05}
     volumes:
-      # Hot-reload en desarrollo
-      - ./epp_core.py:/app/epp_core.py
-      - ./adapter.py:/app/adapter.py
-      - ./amis_dashboard.json:/app/amis_dashboard.json
-      - ./dashboard.html:/app/dashboard.html
-      - ./placeholder_preview.jpg:/app/placeholder_preview.jpg:ro
-      # Fotos de muestra (preview + upload) — RW para POST /media/upload.
+      - ./adapter:/app/adapter
       - ./imagenes_muestra:/media/images
     networks:
       - epp-network
@@ -208,20 +175,15 @@ services:
   bridge:
     build:
       context: .
-      dockerfile: Dockerfile.bridge
+      dockerfile: bridge/Dockerfile
     image: vision-intelligence/bridge:local
     container_name: vi-bridge
     restart: unless-stopped
     depends_on:
-      mediamtx:
-        condition: service_started
       adapter:
         condition: service_healthy
     environment:
-      - RTSP_URL=${RTSP_URL:-rtsp://mediamtx:8554/webcam}
-      # SOURCE_URL generaliza el origen (RTSP o archivo local bajo MEDIA_DIR).
-      # Vacío = cae a RTSP_URL (default previo intacto, BCS-1).
-      - SOURCE_URL=${SOURCE_URL:-}
+      - PYTHONPATH=/app
       - MEDIA_DIR=${MEDIA_DIR:-/media}
       - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
       - ADAPTER_INGEST_URL=${ADAPTER_INGEST_URL:-http://adapter:8000/ingest}
@@ -229,13 +191,11 @@ services:
       - ADAPTER_PREVIEW_FRAME_URL=${ADAPTER_PREVIEW_FRAME_URL:-http://adapter:8000/preview/frame}
       - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
       - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
-      - BRIDGE_FPS=${BRIDGE_FPS:-5}
+      - BRIDGE_FPS=${BRIDGE_FPS:-1}
       - BRIDGE_MAX_WIDTH=${BRIDGE_MAX_WIDTH:-960}
       - JPEG_QUALITY=${JPEG_QUALITY:-80}
       - DEMO_MODE=${DEMO_MODE:-0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - BACKOFF_INITIAL=${BACKOFF_INITIAL:-1}
-      - BACKOFF_MAX=${BACKOFF_MAX:-30}
       - HTTP_TIMEOUT=${HTTP_TIMEOUT:-30}
       - PADDLEX_OCR_URL=${PADDLEX_OCR_URL:-http://paddlex-ocr:8081}
       - PADDLEX_OBJECTS_URL=${PADDLEX_OBJECTS_URL:-http://paddlex-objects:8082}
@@ -246,19 +206,18 @@ services:
       - OCR_TOPK=${OCR_TOPK:-3}
       - OCR_HTTP_TIMEOUT=${OCR_HTTP_TIMEOUT:-5}
     volumes:
-      # Fotos de muestra — mismo layout RO que adapter (sin videos_muestra).
+      - ./detection:/app/detection:ro
+      - ./bridge:/app/bridge:ro
       - ./imagenes_muestra:/media/images:ro
     networks:
       - epp-network
     logging: *default-logging
 
-  # Bridge demo: consolida tracks + AMIS sin webcam ni PaddleX.
-  # NO usar junto al bridge real: mezcla detecciones sintéticas (ABC123) en /events.
   bridge-demo:
     profiles: ["demo"]
     build:
       context: .
-      dockerfile: Dockerfile.bridge
+      dockerfile: bridge/Dockerfile
     image: vision-intelligence/bridge:local
     container_name: vi-bridge-demo
     restart: unless-stopped
@@ -266,6 +225,7 @@ services:
       adapter:
         condition: service_healthy
     environment:
+      - PYTHONPATH=/app
       - ADAPTER_INGEST_URL=http://adapter:8000/ingest
       - DEMO_MODE=1
       - BRIDGE_FPS=1
@@ -287,28 +247,24 @@ services:
       - epp-network
     logging: *default-logging
 
-  # Sink de reglas headless (MVP): decide sobre PerceptionEvents reenviados
-  # por el adaptador. Alternativa reproducible/inspeccionable a la UI SQL de
-  # jetlinks (arriba), que queda como opción manual. Ambos corren bajo el
-  # mismo profile sin conflicto.
   rules-sink:
     profiles: ["rules"]
     build:
       context: .
-      dockerfile: Dockerfile.rules-sink
+      dockerfile: rules/Dockerfile
     image: vision-intelligence/rules-sink:local
     container_name: vi-rules-sink
     restart: unless-stopped
     ports:
       - "${RULES_SINK_PORT:-8850}:8850"
     environment:
+      - PYTHONPATH=/app
       - RULES_SINK_API_KEY=${RULES_SINK_API_KEY:-demo}
       - RULES_SINK_MAX_ALERTS=${RULES_SINK_MAX_ALERTS:-100}
       - VI_ENV=${VI_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      # Hot-reload en desarrollo (paridad con adapter)
-      - ./rules_sink.py:/app/rules_sink.py
+      - ./rules:/app/rules
     networks:
       - epp-network
     healthcheck:

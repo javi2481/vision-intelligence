@@ -25,14 +25,14 @@ RUN pip install --no-cache-dir "paddlex[cv,serving,ocr]>=3.0.0" || \
     pip install --no-cache-dir "paddlex[cv]" "paddlex[serving]" "paddlex[ocr]" || \
     pip install --no-cache-dir paddlex
 
-COPY entrypoint.paddlex.sh /entrypoint.paddlex.sh
+COPY infra/entrypoint.paddlex.sh /entrypoint.paddlex.sh
 RUN chmod +x /entrypoint.paddlex.sh
 
 # Pipeline OCR pineado a PP-OCRv5 (mobile): PP-OCRv6 (default de paddlex 3.7.2)
 # no es compatible con el motor de inferencia de esta imagen base (PIR
 # mismatch). Solo lo usa el servicio paddlex-ocr via VI_PIPELINE; el servicio
 # paddlex (attr) no lo referencia y sigue con vehicle_attribute_recognition.
-COPY paddlex_ocr_pipeline.yaml /opt/paddlex/pipelines/ocr_v5_mobile.yaml
+COPY detection/plates/pipeline.yaml /opt/paddlex/pipelines/ocr_v5_mobile.yaml
 
 EXPOSE 8080
 
