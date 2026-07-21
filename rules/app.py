@@ -62,7 +62,7 @@ class VehiclePayloadIn(BaseModel):
 
 class PerceptionEventIn(BaseModel):
     """
-    Modelo local del PerceptionEvent de epp-core (schema 1.0-draft).
+    Modelo local del PerceptionEvent de epp-core (schema 1.0).
 
     Deliberadamente permisivo: solo declara los campos que `evaluate_rule`
     necesita y descarta el resto (`extra="ignore"`) para no acoplarse al
