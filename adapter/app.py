@@ -308,7 +308,7 @@ async def _forward_to_jetlinks(events: list[PerceptionEvent]) -> None:
                 "[rules-mvp] candidate_ids=%s conf=%.3f plate=%s",
                 event.candidate_ids,
                 event.confidence,
-                event.payload.plate_text,
+                getattr(event.payload, "plate_text", None),
             )
         return
 
@@ -408,7 +408,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Vision Intelligence Adapter",
-    description="Normaliza PaddleX → epp-core (schema 1.0-draft)",
+    description="Normaliza PaddleX → epp-core (schema 1.0)",
     version="0.1.0",
     lifespan=lifespan,
 )

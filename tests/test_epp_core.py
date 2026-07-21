@@ -52,11 +52,11 @@ class ConsolidateAndEmitVehicleRegressionTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         event = events[0]
         self.assertEqual(event.entity_type, "vehicle")
+        self.assertEqual(event.schema_version, "1.0")
         self.assertEqual(event.payload.vehicle_type, "sedan")
         self.assertEqual(event.payload.color, "white")
         self.assertEqual(event.payload.plate_text, "ABC123")
         self.assertIsNotNone(event.payload.plate_confidence)
-        self.assertIsNone(event.payload.class_name)
         self.assertIn("patente:ABC123", event.candidate_ids)
 
 
@@ -87,10 +87,9 @@ class ConsolidateAndEmitObjectTrackTests(unittest.TestCase):
         event = events[0]
         self.assertEqual(event.entity_type, "object")
         self.assertEqual(event.payload.class_name, "person")
-        self.assertIsNone(event.payload.color)
-        self.assertIsNone(event.payload.plate_text)
-        self.assertIsNone(event.payload.plate_confidence)
-        self.assertIsNone(event.payload.vehicle_type)
+        self.assertFalse(hasattr(event.payload, "color"))
+        self.assertFalse(hasattr(event.payload, "plate_text"))
+        self.assertFalse(hasattr(event.payload, "vehicle_type"))
         self.assertNotIn("patente:", "".join(event.candidate_ids))
         self.assertIn("track:o-1", event.candidate_ids)
 
@@ -198,6 +197,67 @@ class ConsolidateAndEmitFaceAndSceneTests(unittest.TestCase):
         self.assertEqual(types, {"pose", "text"})
         text_ev = next(e for e in events if e.entity_type == "text")
         self.assertEqual(text_ev.payload.text, "STOP")
+
+
+class IdentityPseudonymizeTests(unittest.TestCase):
+    def test_face_id_hashes_identity(self) -> None:
+        import os
+
+        prev = os.environ.get("IDENTITY_HASH_SALT")
+        os.environ["IDENTITY_HASH_SALT"] = "test-salt-sprint2"
+        try:
+            from adapter.epp_core import PerceptionEvent, pseudonymize_identity
+
+            raw = "alice@gallery"
+            expected = pseudonymize_identity(raw)
+            events = PerceptionEvent.consolidate_and_emit(
+                [
+                    {
+                        "track_id": "fi-1",
+                        "label": raw,
+                        "score": 0.95,
+                        "bbox": [1, 2, 3, 4],
+                        "entity_type": "face_id",
+                        "identity": raw,
+                        "frame_ts": "2026-07-18T15:00:00Z",
+                    }
+                ]
+            )
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].payload.identity, expected)
+            self.assertNotEqual(events[0].payload.identity, raw)
+            self.assertIn(f"identity:{expected}", events[0].candidate_ids)
+            self.assertNotIn(f"identity:{raw}", events[0].candidate_ids)
+        finally:
+            if prev is None:
+                os.environ.pop("IDENTITY_HASH_SALT", None)
+            else:
+                os.environ["IDENTITY_HASH_SALT"] = prev
+
+    def test_face_id_omits_identity_without_salt(self) -> None:
+        import os
+
+        prev = os.environ.pop("IDENTITY_HASH_SALT", None)
+        try:
+            events = PerceptionEvent.consolidate_and_emit(
+                [
+                    {
+                        "track_id": "fi-2",
+                        "label": "bob",
+                        "score": 0.9,
+                        "entity_type": "face_id",
+                        "identity": "bob",
+                    }
+                ]
+            )
+            self.assertEqual(len(events), 1)
+            self.assertIsNone(events[0].payload.identity)
+            self.assertTrue(
+                all(not c.startswith("identity:") for c in events[0].candidate_ids)
+            )
+        finally:
+            if prev is not None:
+                os.environ["IDENTITY_HASH_SALT"] = prev
 
 
 if __name__ == "__main__":

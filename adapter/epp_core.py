@@ -1,5 +1,5 @@
 """
-epp-core draft contract (schema_version=\"1.0-draft\").
+epp-core contract (schema_version=\"1.0\").
 
 Ubicación: adapter/epp_core.py — contrato portable del Producto B
 (Vision Intelligence, EPP v4.6 Punto 12).
@@ -7,36 +7,64 @@ Ubicación: adapter/epp_core.py — contrato portable del Producto B
 Única pieza portable: entra un dict (detección del bridge), sale un PerceptionEvent.
 Sin lógica de reglas de negocio; solo normalización y consolidación de tracks.
 
+Payload tipado por entity_type (discriminated union Pydantic v2): cada variante
+declara solo sus campos. Identidades (face_id) se pseudonimizan con HMAC-SHA256
+antes de salir del edge (Ley 25.326 / edge-first metadata-only).
+
 Asumción del JSON de detección (por ítem)::
 
     {
-      \"track_id\": \"v-42\",         # o \"o-1\" / \"f-1\" / \"scene-0\"
-      \"label\": \"car\",             # vehicle_type, class_name COCO, face, scene_type
+      \"track_id\": \"v-42\",
+      \"label\": \"car\",
       \"score\": 0.91,
       \"bbox\": [x1, y1, x2, y2],
-      \"color\": \"white\",           # opcional (vehicles)
-      \"plate\": {\"text\": \"ABC123\", \"score\": 0.87},  # opcional
-      \"entity_type\": \"vehicle\",   # vehicle | object | face | scene
-      \"person\": {...},             # opcional (attrs pedestrians sobre person)
-      \"scene\": {...},              # opcional (entity_type scene)
+      \"color\": \"white\",
+      \"plate\": {\"text\": \"ABC123\", \"score\": 0.87},
+      \"entity_type\": \"vehicle\",
       \"frame_ts\": \"2026-07-18T15:00:00.123Z\"
     }
-
-Variantes aceptadas: plate_text/plate_score en raíz, conf/confidence
-en lugar de score, boxes en lugar de bbox.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import logging
+import os
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Annotated, Any, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+logger = logging.getLogger("epp_core")
+
+SCHEMA_VERSION = "1.0"
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def pseudonymize_identity(raw: Optional[str]) -> Optional[str]:
+    """HMAC-SHA256(identity, IDENTITY_HASH_SALT). Nunca emite identity en claro.
+
+    Si hay identity pero falta el salt, se omite el campo (no se filtra plaintext).
+    """
+    if raw is None or str(raw).strip() == "":
+        return None
+    salt = os.getenv("IDENTITY_HASH_SALT", "").strip()
+    if not salt:
+        logger.warning(
+            "identity omitted: set IDENTITY_HASH_SALT when ENABLE_FACE_ID is on"
+        )
+        return None
+    digest = hmac.new(
+        salt.encode("utf-8"),
+        str(raw).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return digest
 
 
 class Location(BaseModel):
@@ -52,51 +80,129 @@ class Location(BaseModel):
 
 
 class VehiclePayload(BaseModel):
-    """Payload tipado de la entidad consolidada (pistas, no veredictos).
-
-    Nombre histórico ("Vehicle...") preservado para no romper referencias en
-    adapter/app.py y el dashboard; el field set cubre también object/face/scene.
-    """
-
     color: Optional[str] = None
     vehicle_type: Optional[str] = None
-    class_name: Optional[str] = None
     plate_text: Optional[str] = None
     plate_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     bbox: Optional[list[float]] = None
     speed_kmh: Optional[float] = None
+
+
+class ObjectPayload(BaseModel):
+    class_name: Optional[str] = None
+    bbox: Optional[list[float]] = None
+    speed_kmh: Optional[float] = None
     person: Optional[dict[str, Any]] = None
+
+
+class FacePayload(BaseModel):
+    class_name: str = "face"
+    bbox: Optional[list[float]] = None
+
+
+class ScenePayload(BaseModel):
+    class_name: Optional[str] = None
     scene_type: Optional[str] = None
     scene: Optional[dict[str, Any]] = None
+    bbox: Optional[list[float]] = None
+
+
+class PosePayload(BaseModel):
+    class_name: Optional[str] = None
+    bbox: Optional[list[float]] = None
+    keypoints: Optional[list[Any]] = None
+
+
+class TextPayload(BaseModel):
+    class_name: Optional[str] = None
+    bbox: Optional[list[float]] = None
+    text: Optional[str] = None
+
+
+class IdentityPayload(BaseModel):
+    """identity ya viene pseudonimizada (HMAC hex)."""
+
+    class_name: Optional[str] = None
+    bbox: Optional[list[float]] = None
+    identity: Optional[str] = None
+
+
+class GenericPayload(BaseModel):
+    """sign, scene_cls, instance, small_object, anomaly, open_vocab."""
+
+    class_name: Optional[str] = None
+    bbox: Optional[list[float]] = None
     text: Optional[str] = None
     identity: Optional[str] = None
     keypoints: Optional[list[Any]] = None
 
 
+EntityPayload = Annotated[
+    Union[
+        VehiclePayload,
+        ObjectPayload,
+        FacePayload,
+        ScenePayload,
+        PosePayload,
+        TextPayload,
+        IdentityPayload,
+        GenericPayload,
+    ],
+    Field(description="Payload tipado; el tipo concreto lo fija entity_type"),
+]
+
+_ENTITY_PAYLOAD: dict[str, type[BaseModel]] = {
+    "vehicle": VehiclePayload,
+    "object": ObjectPayload,
+    "face": FacePayload,
+    "scene": ScenePayload,
+    "pose": PosePayload,
+    "text": TextPayload,
+    "face_id": IdentityPayload,
+    "sign": GenericPayload,
+    "scene_cls": GenericPayload,
+    "instance": GenericPayload,
+    "small_object": GenericPayload,
+    "anomaly": GenericPayload,
+    "open_vocab": GenericPayload,
+}
+
+
 class PerceptionEvent(BaseModel):
     """
-    Sobre común epp-core (borrador).
+    Sobre común epp-core 1.0.
 
     Garantías:
       #1 Dos tiempos: occurred_at (frame) y observed_at (procesamiento).
       #3 Confianza comparable en [0.0, 1.0].
       #4 Pistas, no veredictos: candidate_ids.
-      #6 Versionado: schema_version=\"1.0-draft\".
+      #6 Versionado: schema_version=\"1.0\".
+      Payload discriminado por entity_type (validación por variante).
     """
 
-    schema_version: str = "1.0-draft"
+    schema_version: str = SCHEMA_VERSION
     entity_type: str = "vehicle"
     occurred_at: datetime
     observed_at: datetime = Field(default_factory=_utc_now)
     confidence: float = Field(..., ge=0.0, le=1.0)
     candidate_ids: list[str] = Field(default_factory=list)
     location: Optional[Location] = None
-    payload: VehiclePayload
+    payload: EntityPayload
 
     @field_validator("confidence")
     @classmethod
     def _clamp_confidence(cls, value: float) -> float:
         return max(0.0, min(1.0, float(value)))
+
+    @model_validator(mode="after")
+    def _payload_matches_entity_type(self) -> PerceptionEvent:
+        expected = _ENTITY_PAYLOAD.get(self.entity_type)
+        if expected is not None and not isinstance(self.payload, expected):
+            raise ValueError(
+                f"payload type {type(self.payload).__name__} incompatible with "
+                f"entity_type={self.entity_type!r} (expected {expected.__name__})"
+            )
+        return self
 
     @classmethod
     def consolidate_and_emit(
@@ -104,13 +210,8 @@ class PerceptionEvent(BaseModel):
         paddlex_detections: list[dict[str, Any]],
         *,
         location: Optional[Location] = None,
-    ) -> list["PerceptionEvent"]:
-        """
-        Agrupa detecciones por track_id y aplica votación temporal
-        ponderada por confianza (score) para plate_text y color.
-
-        Emite un PerceptionEvent por track consolidado.
-        """
+    ) -> list[PerceptionEvent]:
+        """Agrupa por track_id y emite un PerceptionEvent consolidado por track."""
         if not paddlex_detections:
             return []
 
@@ -162,8 +263,6 @@ def _normalize_detection(raw: dict[str, Any]) -> dict[str, Any]:
         "bbox": list(bbox) if bbox is not None else None,
         "speed_kmh": raw.get("speed_kmh") or raw.get("speed"),
         "frame_ts": frame_ts,
-        # Default "vehicle" preserva compat con detecciones sintéticas de
-        # bridge-demo (no traen entity_type).
         "entity_type": raw.get("entity_type") or "vehicle",
         "person": raw.get("person") if isinstance(raw.get("person"), dict) else None,
         "scene": raw.get("scene") if isinstance(raw.get("scene"), dict) else None,
@@ -178,11 +277,6 @@ def _weighted_vote(
     value_key: str,
     weight_key: str,
 ) -> tuple[Optional[str], float]:
-    """
-    Votación por mayoría ponderada por score.
-
-    Retorna (valor_ganador, peso_normalizado_del_ganador).
-    """
     weights: dict[str, float] = defaultdict(float)
     total = 0.0
 
@@ -205,7 +299,6 @@ def _weighted_vote(
 
 
 def _parse_occurred_at(detections: list[dict[str, Any]]) -> datetime:
-    """Usa el frame_ts más reciente del track; fallback a now()."""
     latest: Optional[datetime] = None
     for det in detections:
         ts = det.get("frame_ts")
@@ -230,58 +323,41 @@ def _emit_track(
     observed_at: datetime,
     location: Optional[Location],
 ) -> Optional[PerceptionEvent]:
-    """Construye un PerceptionEvent a partir de las detecciones de un track.
-
-    `entity_type` se deriva de las detecciones del track (primera detección
-    no-nula; en la práctica todo un track comparte entity_type, ya que
-    vehicle y object_detection usan trackers e IDs con prefijo separados
-    "v-"/"o-" en detection/vehicles y detection/objects). Para `entity_type == "object"` se vota
-    `class_name` (la label COCO) en vez de `color`/`plate_text`, y se omite
-    el boost de confianza por patente (concepto propio de vehículos).
-    """
     entity_type = detections[0].get("entity_type") or "vehicle"
 
-    # bbox / speed del frame con mayor score (común a ambas ramas)
     best = max(detections, key=lambda d: float(d.get("score") or 0.0))
     det_scores = [float(d.get("score") or 0.0) for d in detections]
     mean_score = sum(det_scores) / len(det_scores) if det_scores else 0.0
     speed_kmh = (
         float(best["speed_kmh"]) if best.get("speed_kmh") is not None else None
     )
+    common = dict(
+        schema_version=SCHEMA_VERSION,
+        occurred_at=_parse_occurred_at(detections),
+        observed_at=observed_at,
+        location=location,
+    )
 
     if entity_type == "face":
-        confidence = max(0.0, min(1.0, mean_score))
         return cls(
-            schema_version="1.0-draft",
+            **common,
             entity_type="face",
-            occurred_at=_parse_occurred_at(detections),
-            observed_at=observed_at,
-            confidence=confidence,
+            confidence=max(0.0, min(1.0, mean_score)),
             candidate_ids=[f"track:{track_id}"],
-            location=location,
-            payload=VehiclePayload(
-                class_name="face",
-                bbox=best.get("bbox"),
-            ),
+            payload=FacePayload(class_name="face", bbox=best.get("bbox")),
         )
 
     if entity_type == "scene":
         scene_blob = best.get("scene") if isinstance(best.get("scene"), dict) else {}
         scene_type = (
-            (scene_blob or {}).get("type")
-            or best.get("label")
-            or "unknown"
+            (scene_blob or {}).get("type") or best.get("label") or "unknown"
         )
-        confidence = max(0.0, min(1.0, mean_score))
         return cls(
-            schema_version="1.0-draft",
+            **common,
             entity_type="scene",
-            occurred_at=_parse_occurred_at(detections),
-            observed_at=observed_at,
-            confidence=confidence,
+            confidence=max(0.0, min(1.0, mean_score)),
             candidate_ids=[f"track:{track_id}", f"scene:{scene_type}"],
-            location=location,
-            payload=VehiclePayload(
+            payload=ScenePayload(
                 class_name=str(scene_type),
                 scene_type=str(scene_type),
                 scene=dict(scene_blob) if scene_blob else None,
@@ -291,37 +367,78 @@ def _emit_track(
 
     if entity_type == "object":
         class_name, _ = _weighted_vote(detections, "label", "score")
-        confidence = max(0.0, min(1.0, mean_score))
-        candidate_ids: list[str] = [f"track:{track_id}"]
         person_attrs = None
         for d in reversed(detections):
             if isinstance(d.get("person"), dict) and d["person"]:
                 person_attrs = dict(d["person"])
                 break
-
-        payload = VehiclePayload(
-            class_name=class_name,
-            bbox=best.get("bbox"),
-            speed_kmh=speed_kmh,
-            person=person_attrs,
-        )
-
         return cls(
-            schema_version="1.0-draft",
+            **common,
             entity_type="object",
-            occurred_at=_parse_occurred_at(detections),
-            observed_at=observed_at,
-            confidence=confidence,
-            candidate_ids=candidate_ids,
-            location=location,
-            payload=payload,
+            confidence=max(0.0, min(1.0, mean_score)),
+            candidate_ids=[f"track:{track_id}"],
+            payload=ObjectPayload(
+                class_name=class_name,
+                bbox=best.get("bbox"),
+                speed_kmh=speed_kmh,
+                person=person_attrs,
+            ),
         )
 
-    # Tipos extendidos / experimentales: pose, text, face_id, sign, …
+    if entity_type == "pose":
+        class_name, _ = _weighted_vote(detections, "label", "score")
+        kps = best.get("keypoints") if isinstance(best.get("keypoints"), list) else None
+        return cls(
+            **common,
+            entity_type="pose",
+            confidence=max(0.0, min(1.0, mean_score)),
+            candidate_ids=[f"track:{track_id}"],
+            payload=PosePayload(
+                class_name=class_name or "pose",
+                bbox=best.get("bbox"),
+                keypoints=kps,
+            ),
+        )
+
+    if entity_type == "text":
+        class_name, _ = _weighted_vote(detections, "label", "score")
+        text_val = best.get("text")
+        cands = [f"track:{track_id}"]
+        if text_val:
+            cands.insert(0, f"text:{text_val}")
+        return cls(
+            **common,
+            entity_type="text",
+            confidence=max(0.0, min(1.0, mean_score)),
+            candidate_ids=cands,
+            payload=TextPayload(
+                class_name=class_name or "text",
+                bbox=best.get("bbox"),
+                text=str(text_val) if text_val else None,
+            ),
+        )
+
+    if entity_type == "face_id":
+        class_name, _ = _weighted_vote(detections, "label", "score")
+        identity_hash = pseudonymize_identity(
+            str(best["identity"]) if best.get("identity") else None
+        )
+        cands = [f"track:{track_id}"]
+        if identity_hash:
+            cands.insert(0, f"identity:{identity_hash}")
+        return cls(
+            **common,
+            entity_type="face_id",
+            confidence=max(0.0, min(1.0, mean_score)),
+            candidate_ids=cands,
+            payload=IdentityPayload(
+                class_name=class_name or "face_id",
+                bbox=best.get("bbox"),
+                identity=identity_hash,
+            ),
+        )
+
     _GENERIC_TYPES = {
-        "pose",
-        "text",
-        "face_id",
         "sign",
         "scene_cls",
         "instance",
@@ -331,37 +448,34 @@ def _emit_track(
     }
     if entity_type in _GENERIC_TYPES:
         class_name, _ = _weighted_vote(detections, "label", "score")
-        confidence = max(0.0, min(1.0, mean_score))
         text_val = best.get("text")
-        identity_val = best.get("identity")
+        identity_hash = pseudonymize_identity(
+            str(best["identity"]) if best.get("identity") else None
+        )
         kps = best.get("keypoints") if isinstance(best.get("keypoints"), list) else None
         cands = [f"track:{track_id}"]
-        if identity_val:
-            cands.insert(0, f"identity:{identity_val}")
+        if identity_hash:
+            cands.insert(0, f"identity:{identity_hash}")
         if text_val:
             cands.insert(0, f"text:{text_val}")
         return cls(
-            schema_version="1.0-draft",
+            **common,
             entity_type=str(entity_type),
-            occurred_at=_parse_occurred_at(detections),
-            observed_at=observed_at,
-            confidence=confidence,
+            confidence=max(0.0, min(1.0, mean_score)),
             candidate_ids=cands,
-            location=location,
-            payload=VehiclePayload(
+            payload=GenericPayload(
                 class_name=class_name or str(entity_type),
                 bbox=best.get("bbox"),
                 text=str(text_val) if text_val else None,
-                identity=str(identity_val) if identity_val else None,
+                identity=identity_hash,
                 keypoints=kps,
             ),
         )
 
-    # entity_type == "vehicle": comportamiento sin cambios.
+    # vehicle (default)
     plate_text, plate_vote_conf = _weighted_vote(
         detections, "plate_text", "plate_score"
     )
-    # plate_score puede ser None; usar score de detección como peso
     if plate_text is None:
         plate_fallback = [
             {**d, "plate_score": d.get("plate_score") or d.get("score", 0.0)}
@@ -372,12 +486,8 @@ def _emit_track(
         )
 
     color, _ = _weighted_vote(detections, "color", "score")
-
-    # vehicle_type: modo (mayor score acumulado por label)
     type_winner, _ = _weighted_vote(detections, "label", "score")
 
-    # Confianza comparable: media de detección * peso de voto de patente
-    # (si no hay patente, solo media de detección).
     if plate_text and plate_vote_conf > 0.0:
         confidence = max(0.0, min(1.0, mean_score * (0.5 + 0.5 * plate_vote_conf)))
         plate_confidence = plate_vote_conf
@@ -389,22 +499,34 @@ def _emit_track(
     if plate_text:
         candidate_ids.insert(0, f"patente:{plate_text}")
 
-    payload = VehiclePayload(
-        color=color,
-        vehicle_type=type_winner,
-        plate_text=plate_text,
-        plate_confidence=plate_confidence,
-        bbox=best.get("bbox"),
-        speed_kmh=speed_kmh,
-    )
-
     return cls(
-        schema_version="1.0-draft",
+        **common,
         entity_type="vehicle",
-        occurred_at=_parse_occurred_at(detections),
-        observed_at=observed_at,
         confidence=confidence,
         candidate_ids=candidate_ids,
-        location=location,
-        payload=payload,
+        payload=VehiclePayload(
+            color=color,
+            vehicle_type=type_winner,
+            plate_text=plate_text,
+            plate_confidence=plate_confidence,
+            bbox=best.get("bbox"),
+            speed_kmh=speed_kmh,
+        ),
     )
+
+
+# Re-export útiles para tests / docs de contrato
+__all__ = [
+    "SCHEMA_VERSION",
+    "Location",
+    "VehiclePayload",
+    "ObjectPayload",
+    "FacePayload",
+    "ScenePayload",
+    "PosePayload",
+    "TextPayload",
+    "IdentityPayload",
+    "GenericPayload",
+    "PerceptionEvent",
+    "pseudonymize_identity",
+]
