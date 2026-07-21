@@ -4,10 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Vision Intelligence — Panel</title>
-  <!-- Baidu AMIS + ECharts. Locale en-US evita textos chinos del SDK (default zh-CN). -->
-  <link rel="stylesheet" href="https://unpkg.com/amis@6.7.0/sdk/sdk.css" />
-  <link rel="stylesheet" href="https://unpkg.com/amis@6.7.0/sdk/helper.css" />
-  <link rel="stylesheet" href="https://unpkg.com/amis@6.7.0/sdk/iconfont.css" />
+  <!-- Baidu AMIS + ECharts vendorizados (sin CDN). Locale en-US evita textos chinos del SDK. -->
+  <link rel="stylesheet" href="/static/vendor/amis@6.7.0/sdk.css" />
+  <link rel="stylesheet" href="/static/vendor/amis@6.7.0/helper.css" />
+  <link rel="stylesheet" href="/static/vendor/amis@6.7.0/iconfont.css" />
   <style>
     :root {
       --vi-bg: #eef2f6;
@@ -159,9 +159,9 @@
 </head>
 <body>
   <div id="root"></div>
-  <!-- SDK AMIS es autocontenido (sin app React/Vue propia). ECharts vía CDN. -->
-  <script src="https://unpkg.com/amis@6.7.0/sdk/sdk.js"></script>
-  <script src="https://unpkg.com/echarts@5.5.1/dist/echarts.min.js"></script>
+  <!-- SDK AMIS autocontenido (sin app React/Vue propia). Assets locales en vendor/. -->
+  <script src="/static/vendor/amis@6.7.0/sdk.js"></script>
+  <script src="/static/vendor/echarts@5.5.1/echarts.min.js"></script>
   <script>
     /**
      * Shell mínimo: carga el schema JSON declarativo.
