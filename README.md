@@ -55,7 +55,18 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Capacidades extended (rostros / attrs persona / escena):
+### RAM del host
+
+| Máquina | Qué levantar | `mem_limit` paddlex |
+|---------|--------------|---------------------|
+| Notebook **~8 GB** | Solo profile **default** (~3 servicios) | ~1.2g c/u (anchor `limits-default`) |
+| Desktop **~32 GB** | **default + extended** | ~2g c/u (`limits-extended`) |
+| Experimental | Solo con ≥32 GB y opt-in | mismos techos extended |
+
+No levantes `--profile extended` en 8 GB: aunque haya techos, no cabe el presupuesto de modelos.
+Si un servicio muere `OOMKilled`, subí su `mem_limit` en compose o bajá `BRIDGE_MAX_WIDTH`.
+
+Capacidades extended (rostros / attrs persona / escena) — **desktop 32 GB**:
 
 ```bash
 # En .env: ENABLE_FACE_DETECTION=true ENABLE_PEDESTRIAN_ATTRS=true ENABLE_SCENE_SEG=true
