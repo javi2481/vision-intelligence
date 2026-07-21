@@ -276,7 +276,10 @@ async def run_detections(
 
 
 async def run_image_source(
-    client: httpx.AsyncClient, path: str, selected_name: Optional[str]
+    client: httpx.AsyncClient,
+    path: str,
+    selected_name: Optional[str],
+    generation: Any = None,
 ) -> None:
     """Single-shot sobre una foto: infer + heartbeat preview hasta clear/cambio."""
     reset_vehicle_tracker()
@@ -293,7 +296,11 @@ async def run_image_source(
     detections, _degraded, preview_jpeg = await run_detections(client, frame_hires)
     detections = detections or []
     if detections:
-        await post_json(client, ADAPTER_INGEST_URL, {"detections": detections})
+        await post_json(
+            client,
+            ADAPTER_INGEST_URL,
+            {"detections": detections, "trace_id": generation},
+        )
 
     if preview_jpeg is not None:
         await push_preview_frame(client, preview_jpeg)
@@ -372,7 +379,10 @@ async def run_loop() -> None:
                     continue
 
                 await run_image_source(
-                    client, source, selected.get("name") if selected else None
+                    client,
+                    source,
+                    selected.get("name") if selected else None,
+                    selected.get("generation") if selected else None,
                 )
             except asyncio.CancelledError:
                 raise

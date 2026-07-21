@@ -3,7 +3,8 @@
 ## Para qué sirve
 
 Tests stdlib (`unittest`) de helpers de detection, bridge.media, epp_core y
-media del adapter. No son CI obligatoria.
+media del adapter. No son CI obligatoria localmente; GitHub Actions corre los
+mismos tres archivos en `.github/workflows/ci.yml`.
 
 ## Cómo funciona
 
@@ -15,6 +16,21 @@ PYTHONPATH=. python3 tests/test_bridge_helpers.py
 PYTHONPATH=. python3 tests/test_epp_core.py
 PYTHONPATH=. python3 tests/test_adapter_media.py
 ```
+
+Con vendor local (si existe `.vendor/`):
+
+```bash
+PYTHONPATH=".vendor:." python3 tests/test_adapter_media.py
+```
+
+## Fixtures
+
+| Archivo | Descripción |
+|---------|-------------|
+| `fixtures/sample.jpg` | JPEG mínimo válido (1×1) para pruebas de media/preview sin depender de PIL |
+
+Generado como bytes JFIF embebidos (no requiere Pillow). Se puede regenerar con
+cualquier encoder que escriba un `.jpg` pequeño en esa ruta.
 
 ## Entrada / salida
 
