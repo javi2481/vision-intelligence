@@ -4,8 +4,8 @@ Orquestador foto-only: imagen local → detection/* → Adapter.
 Flujo por foto:
   1. Poll GET /media/current (idle si no hay foto)
   2. cv2.imread
-  3. vehicles + objects (+ faces/pedestrians/scene si ENABLE_*) en paralelo
-  4. merge COCO (dedupe vehículos) + attrs→person + scene frame-level
+  3. Capacidades del registro en paralelo (detection.registry)
+  4. merge COCO + attrs→person + extend/append según Cap.merge
   5. OCR de patente opcional sobre top-K vehicles
   6. overlay EN local → POST /preview/frame
   7. JSON → POST /ingest
@@ -31,51 +31,17 @@ from bridge.media import (
     MEDIA_DIR,
     resolve_active_source,
 )
-from detection.anomaly import ENABLE_ANOMALY, infer_anomaly
 from detection.common.geometry import encode_jpeg, maybe_resize_for_infer, scale_detections
 from detection.common.preview import draw_preview
-from detection.face_id import (
-    ENABLE_FACE_ID,
-    infer_face_id,
-    reset_face_id_tracker,
-)
-from detection.faces import (
-    ENABLE_FACE_DETECTION,
-    PADDLEX_FACES_URL,
-    infer_faces,
-    reset_face_tracker,
-)
-from detection.instances import ENABLE_INSTANCE_SEG, infer_instances
-from detection.objects import (
+from detection.plates import enrich_vehicles_with_plates
+from detection.registry import (
+    CAPABILITIES,
     attach_object_track_ids,
-    infer_objects,
+    capability_status_line,
     merge_coco_detections,
-    reset_object_tracker,
-)
-from detection.open_vocab import ENABLE_OPEN_VOCAB, infer_open_vocab
-from detection.pedestrians import (
-    ENABLE_PEDESTRIAN_ATTRS,
-    PADDLEX_PEDESTRIANS_URL,
-    infer_pedestrian_attrs,
     merge_person_attributes,
+    reset_all_trackers,
 )
-from detection.plates import (
-    ENABLE_PLATE_OCR,
-    PADDLEX_OCR_URL,
-    enrich_vehicles_with_plates,
-)
-from detection.pose import ENABLE_POSE, infer_pose, reset_pose_tracker
-from detection.scene import (
-    ENABLE_SCENE_SEG,
-    PADDLEX_SCENE_URL,
-    infer_scene,
-)
-from detection.scene_cls import ENABLE_SCENE_CLS, infer_scene_cls
-from detection.signs import ENABLE_SIGNS, infer_signs, reset_signs_tracker
-from detection.small_objects import ENABLE_SMALL_OBJECTS, infer_small_objects
-from detection.text import ENABLE_SCENE_OCR, infer_scene_ocr
-from detection.vehicles import infer_vehicles, reset_vehicle_tracker
-from detection.vehicles import client as vehicles_client
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -177,7 +143,7 @@ async def push_preview_frame(client: httpx.AsyncClient, jpeg: bytes) -> None:
 async def run_detections(
     client: httpx.AsyncClient, frame_hires
 ) -> tuple[Optional[list[dict[str, Any]]], bool, Optional[bytes]]:
-    """Orquesta vehicles + objects + extended/experimental + plates + preview.
+    """Orquesta el registro de capacidades + plates + preview.
 
     Returns:
         (detections, degraded, preview_jpeg).
@@ -190,45 +156,24 @@ async def run_detections(
         return None, False, None
 
     h, w = frame_hires.shape[:2]
-    gathered = await asyncio.gather(
-        infer_vehicles(client, jpeg),
-        infer_objects(client, jpeg),
-        infer_faces(client, jpeg),
-        infer_pedestrian_attrs(client, jpeg),
-        infer_scene(client, jpeg, frame_wh=(w, h)),
-        infer_pose(client, jpeg),
-        infer_scene_ocr(client, jpeg),
-        infer_face_id(client, jpeg),
-        infer_signs(client, jpeg),
-        infer_scene_cls(client, jpeg),
-        infer_instances(client, jpeg),
-        infer_small_objects(client, jpeg),
-        infer_anomaly(client, jpeg),
-        infer_open_vocab(client, jpeg),
-    )
-    (
-        vehicle_detections,
-        object_raw,
-        face_dets,
-        ped_attrs,
-        scene_det,
-        pose_dets,
-        text_dets,
-        face_id_dets,
-        sign_dets,
-        scene_cls_det,
-        instance_dets,
-        small_dets,
-        anomaly_det,
-        open_vocab_dets,
-    ) = gathered
+    frame_wh = (w, h)
 
+    async def _call(cap):
+        if cap.needs_frame_wh:
+            return await cap.infer(client, jpeg, frame_wh=frame_wh)
+        return await cap.infer(client, jpeg)
+
+    gathered = await asyncio.gather(*[_call(cap) for cap in CAPABILITIES])
+    by_name = {cap.name: result for cap, result in zip(CAPABILITIES, gathered)}
+
+    vehicle_detections = by_name.get("vehicles")
     if vehicle_detections is None:
         await notify_degraded(client)
         return None, True, None
 
     scale_detections(vehicle_detections, scale_x, scale_y)
 
+    object_raw = by_name.get("objects")
     if object_raw:
         object_detections = attach_object_track_ids(object_raw)
         scale_detections(object_detections, scale_x, scale_y)
@@ -238,6 +183,7 @@ async def run_detections(
     else:
         object_detections = []
 
+    ped_attrs = by_name.get("pedestrians")
     if ped_attrs:
         scale_detections(ped_attrs, scale_x, scale_y)
         object_detections = merge_person_attributes(object_detections, ped_attrs)
@@ -246,30 +192,20 @@ async def run_detections(
         object_detections
     )
 
-    def _extend_scaled(dets: Optional[list[dict[str, Any]]]) -> None:
-        if dets:
-            scale_detections(dets, scale_x, scale_y)
-            detections.extend(dets)
-
-    _extend_scaled(face_dets)
-    _extend_scaled(pose_dets)
-    _extend_scaled(text_dets)
-    _extend_scaled(face_id_dets)
-    _extend_scaled(sign_dets)
-    _extend_scaled(instance_dets)
-    _extend_scaled(small_dets)
-    _extend_scaled(open_vocab_dets)
+    for cap in CAPABILITIES:
+        if cap.merge == "extend_scaled":
+            dets = by_name.get(cap.name)
+            if dets:
+                scale_detections(dets, scale_x, scale_y)
+                detections.extend(dets)
+        elif cap.merge == "append_one":
+            one = by_name.get(cap.name)
+            if one is not None:
+                detections.append(one)
 
     await enrich_vehicles_with_plates(
         client, frame_hires, vehicle_detections, encode_jpeg
     )
-
-    if scene_det is not None:
-        detections.append(scene_det)
-    if scene_cls_det is not None:
-        detections.append(scene_cls_det)
-    if anomaly_det is not None:
-        detections.append(anomaly_det)
 
     preview_jpeg = draw_preview(frame_hires, detections)
     return detections, False, preview_jpeg
@@ -279,12 +215,7 @@ async def run_image_source(
     client: httpx.AsyncClient, path: str, selected_name: Optional[str]
 ) -> None:
     """Single-shot sobre una foto: infer + heartbeat preview hasta clear/cambio."""
-    reset_vehicle_tracker()
-    reset_object_tracker()
-    reset_face_tracker()
-    reset_pose_tracker()
-    reset_face_id_tracker()
-    reset_signs_tracker()
+    reset_all_trackers()
 
     frame_hires = cv2.imread(path)
     if frame_hires is None:
@@ -327,27 +258,11 @@ async def run_image_source(
 async def run_loop() -> None:
     """Loop principal: idle / demo / foto activa."""
     logger.info(
-        "Bridge start (photo-only) media_dir=%s paddlex=%s%s adapter=%s demo=%s "
-        "ocr=%s faces=%s ped=%s scene=%s pose=%s text=%s face_id=%s signs=%s "
-        "exp[scene_cls=%s inst=%s small=%s anom=%s ov=%s]",
+        "Bridge start (photo-only) media_dir=%s %s adapter=%s demo=%s",
         MEDIA_DIR,
-        vehicles_client.PADDLEX_URL,
-        vehicles_client.PADDLEX_PREDICT_PATH,
+        capability_status_line(),
         ADAPTER_INGEST_URL,
         DEMO_MODE,
-        PADDLEX_OCR_URL if ENABLE_PLATE_OCR or ENABLE_SCENE_OCR else "off",
-        PADDLEX_FACES_URL if ENABLE_FACE_DETECTION else "off",
-        PADDLEX_PEDESTRIANS_URL if ENABLE_PEDESTRIAN_ATTRS else "off",
-        PADDLEX_SCENE_URL if ENABLE_SCENE_SEG else "off",
-        ENABLE_POSE,
-        ENABLE_SCENE_OCR,
-        ENABLE_FACE_ID,
-        ENABLE_SIGNS,
-        ENABLE_SCENE_CLS,
-        ENABLE_INSTANCE_SEG,
-        ENABLE_SMALL_OBJECTS,
-        ENABLE_ANOMALY,
-        ENABLE_OPEN_VOCAB,
     )
 
     selected: Optional[dict[str, Any]] = None

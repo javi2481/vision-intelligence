@@ -173,21 +173,18 @@ async def infer_vehicles(
     client: httpx.AsyncClient, jpeg: bytes
 ) -> Optional[list[dict[str, Any]]]:
     """POST JPEG a /vehicle-attribute-recognition. None si HTTP/errorCode falla."""
-    url = f"{PADDLEX_URL.rstrip('/')}{PADDLEX_PREDICT_PATH}"
-    b64 = base64.b64encode(jpeg).decode("ascii")
-    try:
-        resp = await client.post(
-            url, json={"image": b64}, timeout=HTTP_TIMEOUT
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        logger.warning("PaddleX vehicle infer error: %s", exc)
-        return None
+    from detection.common.paddlex_client import post_image_predict
 
-    if not isinstance(data, dict):
-        return []
-    if data.get("errorCode") not in (None, 0, "0"):
-        logger.warning("PaddleX vehicle error: %s", data.get("errorMsg"))
+    data = await post_image_predict(
+        client,
+        base_url=PADDLEX_URL,
+        predict_path=PADDLEX_PREDICT_PATH,
+        jpeg=jpeg,
+        timeout=HTTP_TIMEOUT,
+        log=logger,
+        label="PaddleX vehicle",
+        warn_on_error=True,
+    )
+    if data is None:
         return None
     return normalize_vehicle_result(data)
