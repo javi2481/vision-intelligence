@@ -7,7 +7,18 @@ Ejecutar desde la raíz del repo:
 
 import unittest
 
-from adapter.epp_core import PerceptionEvent, _normalize_detection
+from adapter.epp_core import (
+    FacePayload,
+    GenericPayload,
+    IdentityPayload,
+    ObjectPayload,
+    PerceptionEvent,
+    PosePayload,
+    ScenePayload,
+    TextPayload,
+    VehiclePayload,
+    _normalize_detection,
+)
 
 
 class NormalizeDetectionEntityTypeTests(unittest.TestCase):
@@ -258,6 +269,76 @@ class IdentityPseudonymizeTests(unittest.TestCase):
         finally:
             if prev is not None:
                 os.environ["IDENTITY_HASH_SALT"] = prev
+
+
+class PayloadDiscriminatorRoundTripTests(unittest.TestCase):
+    """B1: cada payload lleva su propio `entity_type` (Literal) y la Union de
+    `PerceptionEvent.payload` usa `Field(discriminator=\"entity_type\")`. Un
+    round-trip JSON debe reconstruir la clase concreta correcta — no la
+    variante equivocada por "smart mode" (forma de campos ambigua)."""
+
+    _SIMPLE_CASES = [
+        ("vehicle", VehiclePayload, {"color": "white"}),
+        ("object", ObjectPayload, {}),
+        ("face", FacePayload, {}),
+        ("scene", ScenePayload, {"scene": {"type": "street"}}),
+        ("pose", PosePayload, {"keypoints": [[1, 2]]}),
+        ("text", TextPayload, {"text": "STOP"}),
+        ("face_id", IdentityPayload, {"identity": "alice"}),
+    ]
+
+    _GENERIC_ENTITY_TYPES = [
+        "sign",
+        "scene_cls",
+        "instance",
+        "small_object",
+        "anomaly",
+        "open_vocab",
+    ]
+
+    def _round_trip(self, entity_type: str, extra: dict) -> PerceptionEvent:
+        detection = {
+            "track_id": f"rt-{entity_type}",
+            "label": entity_type,
+            "score": 0.9,
+            "bbox": [0, 0, 1, 1],
+            "entity_type": entity_type,
+            "frame_ts": "2026-07-18T15:00:00Z",
+            **extra,
+        }
+        events = PerceptionEvent.consolidate_and_emit([detection])
+        self.assertEqual(len(events), 1)
+        dumped = events[0].model_dump_json()
+        return PerceptionEvent.model_validate_json(dumped)
+
+    def test_simple_entity_types_round_trip_to_correct_class(self) -> None:
+        for entity_type, expected_cls, extra in self._SIMPLE_CASES:
+            with self.subTest(entity_type=entity_type):
+                restored = self._round_trip(entity_type, extra)
+                self.assertIsInstance(restored.payload, expected_cls)
+                self.assertEqual(restored.payload.entity_type, entity_type)
+
+    def test_generic_payload_multi_literal_round_trip(self) -> None:
+        for entity_type in self._GENERIC_ENTITY_TYPES:
+            with self.subTest(entity_type=entity_type):
+                restored = self._round_trip(entity_type, {})
+                self.assertIsInstance(restored.payload, GenericPayload)
+                self.assertEqual(restored.payload.entity_type, entity_type)
+                # No debe colar en una variante "vecina" con forma similar.
+                self.assertNotIsInstance(
+                    restored.payload, (TextPayload, ObjectPayload, IdentityPayload, PosePayload)
+                )
+
+    def test_discriminator_rejects_unknown_entity_type_in_payload(self) -> None:
+        with self.assertRaises(Exception):
+            PerceptionEvent.model_validate(
+                {
+                    "entity_type": "vehicle",
+                    "occurred_at": "2026-07-18T15:00:00Z",
+                    "confidence": 0.9,
+                    "payload": {"entity_type": "not-a-real-entity-type"},
+                }
+            )
 
 
 if __name__ == "__main__":
