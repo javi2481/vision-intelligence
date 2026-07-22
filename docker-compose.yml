@@ -74,7 +74,7 @@ services:
     volumes:
       - paddlex-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/docs || curl -fsS http://127.0.0.1:8080/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-ocr:
@@ -91,7 +91,7 @@ services:
     volumes:
       - paddlex-ocr-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/docs || curl -fsS http://127.0.0.1:8081/openapi.json || exit 1"]
       <<: *paddlex-health
 
   # Object detection COCO (person, dog, …). Merge en detection/objects.
@@ -110,7 +110,7 @@ services:
     volumes:
       - paddlex-objects-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8082/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8082/docs || curl -fsS http://127.0.0.1:8082/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-faces:
@@ -128,7 +128,7 @@ services:
     volumes:
       - paddlex-faces-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8083/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8083/docs || curl -fsS http://127.0.0.1:8083/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-pedestrians:
@@ -146,7 +146,7 @@ services:
     volumes:
       - paddlex-pedestrians-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8084/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8084/docs || curl -fsS http://127.0.0.1:8084/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-scene:
@@ -164,7 +164,7 @@ services:
     volumes:
       - paddlex-scene-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8085/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8085/docs || curl -fsS http://127.0.0.1:8085/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-pose:
@@ -182,7 +182,7 @@ services:
     volumes:
       - paddlex-pose-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8086/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8086/docs || curl -fsS http://127.0.0.1:8086/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-face-id:
@@ -200,7 +200,7 @@ services:
     volumes:
       - paddlex-face-id-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8087/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8087/docs || curl -fsS http://127.0.0.1:8087/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-signs:
@@ -218,7 +218,7 @@ services:
     volumes:
       - paddlex-signs-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/docs || curl -fsS http://127.0.0.1:8088/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-scene-cls:
@@ -236,7 +236,7 @@ services:
     volumes:
       - paddlex-scene-cls-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8089/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8089/docs || curl -fsS http://127.0.0.1:8089/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-instances:
@@ -254,7 +254,7 @@ services:
     volumes:
       - paddlex-instances-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8090/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8090/docs || curl -fsS http://127.0.0.1:8090/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-small-objects:
@@ -272,7 +272,7 @@ services:
     volumes:
       - paddlex-small-objects-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8091/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8091/docs || curl -fsS http://127.0.0.1:8091/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-anomaly:
@@ -290,7 +290,7 @@ services:
     volumes:
       - paddlex-anomaly-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8092/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8092/docs || curl -fsS http://127.0.0.1:8092/openapi.json || exit 1"]
       <<: *paddlex-health
 
   paddlex-open-vocab:
@@ -308,7 +308,7 @@ services:
     volumes:
       - paddlex-open-vocab-models:/root/.paddlex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8093/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8093/docs || curl -fsS http://127.0.0.1:8093/openapi.json || exit 1"]
       <<: *paddlex-health
 
 
@@ -336,7 +336,7 @@ services:
     networks:
       - epp-network
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/docs || curl -fsS http://127.0.0.1:8080/openapi.json || exit 1"]
       <<: *paddlex-health
     logging: *default-logging
 
