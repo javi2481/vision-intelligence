@@ -74,6 +74,33 @@ sin rewrite":
 - Next.js sigue sin adoptarse — la vía elegida para la nueva UI es la SPA
   Vite del addendum, no Next.js.
 
+## SPA (`/app/`) — Fase 1 implementada (Batch 2, addendum-s2-spa-s3)
+
+- Fuente: `adapter/ui/spa-src/` (Vite + React + TS, sin Next/SSR).
+  `npm run build` → `adapter/ui/spa/` (gitignored — ver raíz `.gitignore`;
+  se regenera en cada build de imagen, `.gitkeep` solo mantiene el directorio
+  en checkouts sin build).
+- `adapter/Dockerfile` es multi-stage: stage `node:20-slim` corre
+  `npm ci && npm run build` (o `npx tsc -b && npx vite build` en el
+  Dockerfile, sin depender del hook `predev`/`prebuild` que asume el layout
+  del host); el stage Python final solo copia `adapter/ui/spa/` — **no
+  necesita Node en el host de runtime** (verificado con
+  `docker compose build adapter` + smoke test `/`, `/app/`, `/health`).
+- Montaje en `adapter/app.py`: `StaticFiles(directory=SPA_DIR, html=True)`
+  en `/app` — sin fallback adicional a `index.html` en Fase 1 (una sola
+  pantalla, sin rutas de cliente propias).
+- Tipos: `contracts/epp.gen.ts` (fuente: `adapter/epp_core.py`, ver
+  `scripts/gen_epp_types.py` + CI) se copia a
+  `spa-src/src/types/epp.gen.ts` (dev: `scripts/copy-types.mjs`; Docker:
+  `COPY` directo en el Dockerfile).
+- Colores: `scripts/gen_entity_colors.py` extrae por texto los dicts BGR de
+  `detection/common/preview.py` (mismo overlay que usa AMIS/MJPEG) y emite
+  `spa-src/src/colors/entityColors.gen.ts` en hex RGB — una sola paleta,
+  sin duplicar valores a mano. Sin chequeo de CI (a diferencia de
+  `epp.gen.ts`); regenerar a mano si `preview.py` cambia de paleta.
+- Completitud del análisis: `generation === last_ingest_generation` (ver
+  `GET /events`) — no existe un flag `analysis_complete`.
+
 ## Qué no es
 
 No es una app React/Vue propia. No contiene detección.

@@ -14,3 +14,13 @@ imagenes_muestra/
 
 # Skill registry local (rutas de máquina del desarrollador).
 .atl/
+
+# SPA Fase 1 (addendum-s2-spa-s3): adapter/Dockerfile la construye en un
+# stage Node dedicado (npm ci && npm run build) y copia el resultado al
+# stage Python — no hace falta Node en el host de runtime. El output de
+# `vite build` (adapter/ui/spa/) por eso NO se commitea; se regenera en
+# cada build de imagen. Se conserva un .gitkeep para que el directorio
+# exista (StaticFiles lo monta) en checkouts limpios sin build previo.
+/adapter/ui/spa/*
+!/adapter/ui/spa/.gitkeep
+node_modules/
