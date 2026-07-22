@@ -68,6 +68,12 @@ JETLINKS_API_KEY = os.getenv("JETLINKS_API_KEY", "demo")
 # UI estática vive en adapter/ui/ (dashboard, AMIS schema, placeholder).
 _DEFAULT_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 STATIC_DIR = os.getenv("STATIC_DIR", _DEFAULT_STATIC)
+# SPA Fase 1 (addendum-s2-spa-s3): build de Vite (adapter/ui/spa-src/ →
+# adapter/Dockerfile stage node → adapter/ui/spa/). Coexiste con AMIS en
+# `/` — ver adapter/ui/README.md. Sin Node en el host de runtime: la imagen
+# multi-stage ya trae `spa/` compilado; `SPA_DIR` es overrideable para tests.
+_DEFAULT_SPA = os.path.join(_DEFAULT_STATIC, "spa")
+SPA_DIR = os.getenv("SPA_DIR", _DEFAULT_SPA)
 RULES_SINK_URL = os.getenv("RULES_SINK_URL", "http://rules-sink:8850")
 VI_ENV = os.getenv("VI_ENV", "development").strip().lower()
 
@@ -927,3 +933,12 @@ async def dashboard() -> FileResponse:
 # Assets estáticos (amis_dashboard.json, etc.)
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# SPA Fase 1 (addendum-s2-spa-s3): `/app/` — panel alternativo a AMIS (`/`).
+# `html=True` sirve `index.html` para la raíz del mount; la SPA no tiene
+# rutas propias de cliente en F1 (una sola pantalla), así que no hace falta
+# un fallback adicional a index.html para sub-rutas.
+if os.path.isdir(SPA_DIR):
+    app.mount("/app", StaticFiles(directory=SPA_DIR, html=True), name="spa")
+else:
+    logger.warning("SPA_DIR not found (%s) — /app/ disabled", SPA_DIR)
