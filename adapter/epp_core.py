@@ -33,9 +33,9 @@ import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Annotated, Any, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger("epp_core")
 
@@ -80,6 +80,7 @@ class Location(BaseModel):
 
 
 class VehiclePayload(BaseModel):
+    entity_type: Literal["vehicle"] = "vehicle"
     color: Optional[str] = None
     vehicle_type: Optional[str] = None
     plate_text: Optional[str] = None
@@ -89,6 +90,7 @@ class VehiclePayload(BaseModel):
 
 
 class ObjectPayload(BaseModel):
+    entity_type: Literal["object"] = "object"
     class_name: Optional[str] = None
     bbox: Optional[list[float]] = None
     speed_kmh: Optional[float] = None
@@ -96,11 +98,13 @@ class ObjectPayload(BaseModel):
 
 
 class FacePayload(BaseModel):
+    entity_type: Literal["face"] = "face"
     class_name: str = "face"
     bbox: Optional[list[float]] = None
 
 
 class ScenePayload(BaseModel):
+    entity_type: Literal["scene"] = "scene"
     class_name: Optional[str] = None
     scene_type: Optional[str] = None
     scene: Optional[dict[str, Any]] = None
@@ -108,12 +112,14 @@ class ScenePayload(BaseModel):
 
 
 class PosePayload(BaseModel):
+    entity_type: Literal["pose"] = "pose"
     class_name: Optional[str] = None
     bbox: Optional[list[float]] = None
     keypoints: Optional[list[Any]] = None
 
 
 class TextPayload(BaseModel):
+    entity_type: Literal["text"] = "text"
     class_name: Optional[str] = None
     bbox: Optional[list[float]] = None
     text: Optional[str] = None
@@ -122,14 +128,22 @@ class TextPayload(BaseModel):
 class IdentityPayload(BaseModel):
     """identity ya viene pseudonimizada (HMAC hex)."""
 
+    entity_type: Literal["face_id"] = "face_id"
     class_name: Optional[str] = None
     bbox: Optional[list[float]] = None
     identity: Optional[str] = None
 
 
 class GenericPayload(BaseModel):
-    """sign, scene_cls, instance, small_object, anomaly, open_vocab."""
+    """sign, scene_cls, instance, small_object, anomaly, open_vocab.
 
+    `entity_type` no tiene default: cada consolidador debe pasarlo
+    explícitamente (es el discriminador entre las 6 variantes genéricas).
+    """
+
+    entity_type: Literal[
+        "sign", "scene_cls", "instance", "small_object", "anomaly", "open_vocab"
+    ]
     class_name: Optional[str] = None
     bbox: Optional[list[float]] = None
     text: Optional[str] = None
@@ -137,6 +151,10 @@ class GenericPayload(BaseModel):
     keypoints: Optional[list[Any]] = None
 
 
+# Union discriminada por `entity_type`: pydantic elige la variante exacta por
+# el valor del campo (dict/JSON), en vez de "smart mode" (probar cada tipo por
+# forma de campos), que podía instanciar la clase equivocada cuando dos
+# variantes comparten forma (p.ej. GenericPayload vs TextPayload).
 EntityPayload = Annotated[
     Union[
         VehiclePayload,
@@ -148,24 +166,8 @@ EntityPayload = Annotated[
         IdentityPayload,
         GenericPayload,
     ],
-    Field(description="Payload tipado; el tipo concreto lo fija entity_type"),
+    Field(discriminator="entity_type"),
 ]
-
-_ENTITY_PAYLOAD: dict[str, type[BaseModel]] = {
-    "vehicle": VehiclePayload,
-    "object": ObjectPayload,
-    "face": FacePayload,
-    "scene": ScenePayload,
-    "pose": PosePayload,
-    "text": TextPayload,
-    "face_id": IdentityPayload,
-    "sign": GenericPayload,
-    "scene_cls": GenericPayload,
-    "instance": GenericPayload,
-    "small_object": GenericPayload,
-    "anomaly": GenericPayload,
-    "open_vocab": GenericPayload,
-}
 
 
 class PerceptionEvent(BaseModel):
@@ -177,7 +179,11 @@ class PerceptionEvent(BaseModel):
       #3 Confianza comparable en [0.0, 1.0].
       #4 Pistas, no veredictos: candidate_ids.
       #6 Versionado: schema_version=\"1.0\".
-      Payload discriminado por entity_type (validación por variante).
+      Payload discriminado por entity_type (Annotated Union + discriminator;
+      ver `EntityPayload`). El propio `payload.entity_type` es la fuente de
+      verdad de la variante — no hay validación cruzada manual contra el
+      `entity_type` del sobre: pydantic ya resuelve/valida la clase concreta
+      al deserializar via el discriminador.
     """
 
     schema_version: str = SCHEMA_VERSION
@@ -193,16 +199,6 @@ class PerceptionEvent(BaseModel):
     @classmethod
     def _clamp_confidence(cls, value: float) -> float:
         return max(0.0, min(1.0, float(value)))
-
-    @model_validator(mode="after")
-    def _payload_matches_entity_type(self) -> PerceptionEvent:
-        expected = _ENTITY_PAYLOAD.get(self.entity_type)
-        if expected is not None and not isinstance(self.payload, expected):
-            raise ValueError(
-                f"payload type {type(self.payload).__name__} incompatible with "
-                f"entity_type={self.entity_type!r} (expected {expected.__name__})"
-            )
-        return self
 
     @classmethod
     def consolidate_and_emit(
@@ -468,6 +464,7 @@ def _consolidate_generic(cls, track_id, detections, observed_at, location):
         confidence=max(0.0, min(1.0, mean_score)),
         candidate_ids=cands,
         payload=GenericPayload(
+            entity_type=str(entity_type),
             class_name=class_name or str(entity_type),
             bbox=best.get("bbox"),
             text=str(text_val) if text_val else None,

@@ -123,6 +123,14 @@ class AppState:
     )
     current_media: Optional[dict[str, str]] = None
     generation: int = 0
+    # Última generación efectivamente ingerida por el bridge (via trace_id/
+    # generation en /ingest). None = todavía sin ningún ingest. Completitud
+    # (para la SPA) es DERIVADA: generation == last_ingest_generation.
+    # No se resetea en `_flush_detection_session` / bump de `generation`:
+    # queda "stale" (de la generación anterior) hasta el próximo /ingest que
+    # confirme la nueva — así el cliente puede distinguir "processing"
+    # (generation != last_ingest_generation) de "completo".
+    last_ingest_generation: Optional[int] = None
     latest_frame: Optional[bytes] = None
     frame_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     media_seen_mtimes: dict[str, float] = field(default_factory=dict)
@@ -213,7 +221,12 @@ def _media_changes_detected(
 
 
 def _flush_detection_session() -> None:
-    """Limpia buffer/tracks y deja el preview en el placeholder de marca."""
+    """Limpia buffer/tracks y deja el preview en el placeholder de marca.
+
+    Deliberadamente NO toca `st.last_ingest_generation` (queda stale, de la
+    generación anterior) — así `generation != last_ingest_generation` marca
+    "processing" hasta que un nuevo /ingest confirme la generación activa.
+    """
     st = state()
     st.events_buffer.clear()
     st.track_cache.clear()
@@ -515,6 +528,16 @@ async def ingest(request: Request) -> JSONResponse:
     try:
         st = state()
 
+        # El bridge correlaciona cada /ingest con la generación de foto activa
+        # via trace_id (o generation) — si parsea como int, es la confirmación
+        # de que esa generación fue efectivamente ingerida (usado por la SPA
+        # para derivar completitud: generation == last_ingest_generation).
+        if trace_id is not None:
+            try:
+                st.last_ingest_generation = int(trace_id)
+            except (TypeError, ValueError):
+                pass
+
         # Señal de degradación desde el bridge
         if body.get("degraded") is True:
             st.stats["paddlex_degraded"] = True
@@ -591,6 +614,9 @@ async def get_events(limit: int = 100, plate: Optional[str] = None) -> dict[str,
         "total_emitted": st.stats["emitted"],
         "tracks_active": len(st.track_cache),
         "degraded": st.stats["paddlex_degraded"],
+        # Completitud derivada (SPA): generation == last_ingest_generation.
+        "generation": st.generation,
+        "last_ingest_generation": st.last_ingest_generation,
         "events": items,
     }
 
@@ -667,6 +693,36 @@ async def media_current() -> dict[str, Any]:
         "type": st.current_media["type"],
         "generation": st.generation,
     }
+
+
+@app.get("/media/original")
+async def media_original() -> Response:
+    """Sirve el archivo original de la foto activa (sin overlay), para la SPA.
+
+    `X-Generation` permite al cliente detectar que la foto activa cambió sin
+    volver a pegar contra `/media/current`. `no-store`: la SPA nunca debe
+    cachear la foto activa (cambia de nombre/contenido entre generaciones y
+    un mismo nombre puede reaparecer tras un re-upload).
+    404 si no hay foto activa o el archivo ya no está en el allow-list.
+    """
+    st = state()
+    if st.current_media is None:
+        return JSONResponse({"ok": False, "error": "no active media"}, status_code=404)
+
+    resolved = _find_media_path(st.current_media["name"])
+    if resolved is None:
+        return JSONResponse({"ok": False, "error": "media not found"}, status_code=404)
+    path, _media_type = resolved
+    if not os.path.isfile(path):
+        return JSONResponse({"ok": False, "error": "media not found"}, status_code=404)
+
+    return FileResponse(
+        path,
+        headers={
+            "X-Generation": str(st.generation),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 def _safe_upload_basename(original: str) -> Optional[str]:
