@@ -56,14 +56,23 @@ curl -fsSL -o adapter/ui/vendor/echarts@5.5.1/echarts.min.js \
 - `placeholder_preview.jpg` — preview vacío.
 - `vendor/` — SDK pinneado (AMIS + ECharts).
 
-## Frontend: AMIS vs Next.js
+## Frontend: AMIS vs Next.js vs SPA (decisión de producto — actualizada)
 
-**Decisión:** AMIS se queda este sprint y el siguiente.
+**Decisión original (superada):** AMIS se queda este sprint y el siguiente.
 
-- Ya consume `/events` y muestra entity_types extendidos.
-- Next.js solo tiene sentido como spike **después** de estabilizar backend
-  (auth, multi-página, mapas, editor de reglas). No sustituye AMIS hasta
-  decisión explícita de producto.
+**Decisión vigente (addendum `addendum-s2-spa-s3`):** esa decisión queda
+**superada** — el addendum SPA (Fase 1) reemplaza el plan "AMIS dos sprints
+sin rewrite":
+
+- **AMIS sigue siendo el panel en `/`** — no se retira ni se reescribe acá.
+  Sigue consumiendo `/events` y mostrando los `entity_type` extendidos.
+- **La nueva SPA (Vite, sin Node en el host de runtime) monta en `/app/`**,
+  como panel alternativo/nuevo — no como reemplazo inmediato de este panel.
+- **AMIS deja de estar en `/` únicamente cuando la SPA cumpla el DoD de su
+  Fase 1** (ver diseño/tareas del addendum `addendum-s2-spa-s3`). Hasta ese
+  punto, ambos coexisten: `/` = AMIS (este panel), `/app/` = SPA.
+- Next.js sigue sin adoptarse — la vía elegida para la nueva UI es la SPA
+  Vite del addendum, no Next.js.
 
 ## Qué no es
 

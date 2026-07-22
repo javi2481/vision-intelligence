@@ -7,10 +7,44 @@ Imagen Docker compartida de PaddleX y su entrypoint. Los servicios
 
 ## Cómo funciona
 
-1. `Dockerfile.paddlex` instala `paddlex[cv,serving,ocr]`.
+1. `Dockerfile.paddlex` instala `paddlex[cv,serving,ocr]` **pineado a `==3.7.2`**
+   (sin fallbacks `||`): las dos builds (`vision-intelligence/paddlex:local`
+   y el resto de servicios `paddlex-*` que comparten esta imagen) deben usar
+   siempre la misma versión exacta, para reproducibilidad.
 2. Copia pipelines OCR v5 mobile + stubs scene lane/bdd_marks.
 3. `entrypoint.paddlex.sh` ejecuta `paddlex --serve --pipeline … --port …`.
 4. `VI_USE_HPIP=1` añade `--use_hpip` (High Performance Inference).
+
+## Versión pineada de paddlex
+
+- **Versión actual:** `3.7.2` (fijada en `infra/Dockerfile.paddlex`, sin `||`
+  fallback a rangos abiertos).
+- **Por qué pin exacto:** un fallback (`>=3.0.0` o similar) puede traer una
+  versión nueva sin aviso en un rebuild y romper pipelines en producción
+  silenciosamente. Ya hubo un incidente real: PP-OCRv6 (default en paddlex
+  3.7.2) no es compatible con el motor de inferencia (PIR) de esta imagen
+  base — por eso el pipeline OCR está pineado aparte a PP-OCRv5 mobile
+  (`ocr_v5_mobile.yaml`). Sin versión exacta de `paddlex`, ese incidente se
+  puede repetir en cualquier rebuild futuro sin que nadie lo note hasta que
+  falla en runtime.
+
+### Procedimiento de upgrade
+
+1. Bump del pin en `infra/Dockerfile.paddlex` (`paddlex[cv,serving,ocr]==X.Y.Z`).
+2. Rebuild: `docker compose build paddlex paddlex-ocr paddlex-objects`
+   (o `docker compose build` para todo el perfil que uses).
+3. Smoke:
+   - **Notebook 8 GB:** solo `docker compose --profile default up` +
+     verificar `/docs` u `/openapi.json` de cada servicio levantado
+     (ver healthchecks en `docker-compose.yml`). El smoke extendido
+     (`scripts/smoke_extended.sh`) **no corre en esta máquina** — RAM
+     insuficiente para `extended`/`experimental`.
+   - **Desktop 32 GB:** además correr `scripts/smoke_extended.sh` con
+     `--profile extended` (y `experimental` si aplica) antes de aceptar
+     el bump.
+4. Confirmar especialmente que el pipeline OCR (`ocr_v5_mobile.yaml`) sigue
+   sirviendo sin error de PIR/versión — es el punto de fricción conocido.
+5. Recién ahí, commitear el bump del pin.
 
 ## Optimización (Fase 0)
 

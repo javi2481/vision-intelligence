@@ -21,9 +21,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ocr: requerido por el pipeline `OCR` (servicio paddlex-ocr); cv/serving
 # siguen cubriendo vehicle_attribute_recognition (servicio paddlex).
-RUN pip install --no-cache-dir "paddlex[cv,serving,ocr]>=3.0.0" || \
-    pip install --no-cache-dir "paddlex[cv]" "paddlex[serving]" "paddlex[ocr]" || \
-    pip install --no-cache-dir paddlex
+#
+# Versión pineada (sin fallbacks `||`): reproducibilidad build-a-build.
+# 3.7.2 es la versión sobre la que se detectó y documentó el incidente
+# OCRv6/PIR (ver nota más abajo sobre ocr_v5_mobile.yaml) — bumpear el pin
+# requiere repetir ese chequeo de compatibilidad antes de aceptar la nueva
+# versión (ver infra/README.md § Upgrade de paddlex).
+RUN pip install --no-cache-dir "paddlex[cv,serving,ocr]==3.7.2"
 
 COPY infra/entrypoint.paddlex.sh /entrypoint.paddlex.sh
 RUN chmod +x /entrypoint.paddlex.sh
