@@ -244,6 +244,29 @@ class NormalizeObjectDetectionResultTests(unittest.TestCase):
     def test_missing_boxes_returns_empty(self) -> None:
         self.assertEqual(normalize_object_detection_result({"result": {}}), [])
 
+    def test_paddlex_detected_objects_category_name(self) -> None:
+        """PaddleX object_detection returns detectedObjects + categoryName/bbox."""
+        data = {
+            "result": {
+                "detectedObjects": [
+                    {
+                        "bbox": [133.6, 12.5, 447.0, 445.1],
+                        "categoryId": 0,
+                        "categoryName": "person",
+                        "score": 0.895,
+                    }
+                ],
+                "image": "unused",
+            }
+        }
+        dets = normalize_object_detection_result(data)
+
+        self.assertEqual(len(dets), 1)
+        self.assertEqual(dets[0]["label"], "person")
+        self.assertAlmostEqual(dets[0]["score"], 0.895)
+        self.assertEqual(dets[0]["bbox"], [133.6, 12.5, 447.0, 445.1])
+        self.assertEqual(dets[0]["entity_type"], "object")
+
 
 class MergeCocoDetectionsTests(unittest.TestCase):
     @staticmethod

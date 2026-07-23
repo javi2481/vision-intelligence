@@ -39,17 +39,25 @@ def reset_object_tracker() -> None:
 
 
 def normalize_object_detection_result(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Traduce respuesta object_detection → dicts crudos (sin track_id aún)."""
+    """Traduce respuesta object_detection → dicts crudos (sin track_id aún).
+
+    Acepta el schema legacy (`boxes` + `label`/`coordinate`) y el de PaddleX
+    actual (`detectedObjects` + `categoryName`/`bbox`).
+    """
     result = data.get("result", data)
     boxes: list[dict[str, Any]] = []
     if isinstance(result, dict):
-        raw = result.get("boxes") or []
+        raw = result.get("detectedObjects") or result.get("boxes") or []
         if isinstance(raw, list):
             boxes = raw
     elif isinstance(result, list):
         for item in result:
-            if isinstance(item, dict) and "boxes" in item:
+            if not isinstance(item, dict):
+                continue
+            if "boxes" in item:
                 boxes.extend(item.get("boxes") or [])
+            elif "detectedObjects" in item:
+                boxes.extend(item.get("detectedObjects") or [])
 
     detections: list[dict[str, Any]] = []
     for box in boxes:
@@ -59,7 +67,12 @@ def normalize_object_detection_result(data: dict[str, Any]) -> list[dict[str, An
         if not coord or len(coord) < 4:
             continue
         bbox = [float(coord[0]), float(coord[1]), float(coord[2]), float(coord[3])]
-        label = box.get("label") or box.get("cls_name") or ""
+        label = (
+            box.get("label")
+            or box.get("categoryName")
+            or box.get("cls_name")
+            or ""
+        )
         score = float(box.get("score") or box.get("det_score") or 0.0)
         detections.append(
             {
