@@ -32,6 +32,14 @@
       "sessions": 1,
       "memories": 37,
       "prompts": 0
+    },
+    {
+      "id": "bda5d5a4",
+      "created_by": "Equipo",
+      "created_at": "2026-07-23T20:40:03Z",
+      "sessions": 0,
+      "memories": 1,
+      "prompts": 0
     }
   ]
 }
