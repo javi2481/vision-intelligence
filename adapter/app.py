@@ -137,10 +137,64 @@ class AppState:
     # confirme la nueva — así el cliente puede distinguir "processing"
     # (generation != last_ingest_generation) de "completo".
     last_ingest_generation: Optional[int] = None
+    # Runtime active ⊆ deploy available, keyed by SPA entity_type.
+    # Boot: copy(available). Never reset on flush/generation bump.
+    active: dict[str, bool] = field(default_factory=dict)
     latest_frame: Optional[bytes] = None
     frame_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     media_seen_mtimes: dict[str, float] = field(default_factory=dict)
     media_watch_bootstrapped: bool = False
+
+
+def _env_enabled(name: str, default: str = "false") -> bool:
+    """Misma convención que detection/* (1/true/yes)."""
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes")
+
+
+# SPA entity_type → registry name → ENABLE_* (None = always available).
+# critical=True → vehicle: PUT active=false → 400.
+_SPA_CAPABILITY_DEFS: list[tuple[str, str, Optional[str], bool]] = [
+    ("vehicle", "vehicles", None, True),
+    ("object", "objects", None, False),
+    ("face", "faces", "ENABLE_FACE_DETECTION", False),
+    ("scene", "scene", "ENABLE_SCENE_SEG", False),
+    ("pose", "pose", "ENABLE_POSE", False),
+    ("text", "text", "ENABLE_SCENE_OCR", False),
+    ("face_id", "face_id", "ENABLE_FACE_ID", False),
+    ("sign", "signs", "ENABLE_SIGNS", False),
+    ("scene_cls", "scene_cls", "ENABLE_SCENE_CLS", False),
+    ("instance", "instances", "ENABLE_INSTANCE_SEG", False),
+    ("small_object", "small_objects", "ENABLE_SMALL_OBJECTS", False),
+    ("anomaly", "anomaly", "ENABLE_ANOMALY", False),
+    ("open_vocab", "open_vocab", "ENABLE_OPEN_VOCAB", False),
+]
+
+
+def _compute_available() -> dict[str, bool]:
+    """available por entity_type desde ENABLE_* (vehicle/object siempre True)."""
+    out: dict[str, bool] = {}
+    for entity_type, _name, env_name, _critical in _SPA_CAPABILITY_DEFS:
+        out[entity_type] = True if env_name is None else _env_enabled(env_name)
+    return out
+
+
+def _spa_capability_catalog() -> dict[str, Any]:
+    """Catálogo GET/PUT keyed por SPA entity_type (sin pedestrians/plates)."""
+    st = state()
+    available = _compute_available()
+    capabilities: dict[str, dict[str, Any]] = {}
+    for entity_type, name, _env, critical in _SPA_CAPABILITY_DEFS:
+        avail = available[entity_type]
+        active = bool(st.active.get(entity_type, False)) and avail
+        entry: dict[str, Any] = {
+            "name": name,
+            "available": avail,
+            "active": active,
+        }
+        if critical:
+            entry["critical"] = True
+        capabilities[entity_type] = entry
+    return {"generation": st.generation, "capabilities": capabilities}
 
 
 _app_state: Optional[AppState] = None
@@ -452,6 +506,8 @@ async def lifespan(_app: FastAPI):
     st = AppState()
     if _PLACEHOLDER_JPEG:
         st.latest_frame = _PLACEHOLDER_JPEG
+    # Boot active = copy(available), not all-true.
+    st.active = dict(_compute_available())
     _app_state = st
 
     stop = asyncio.Event()
@@ -504,6 +560,82 @@ async def health() -> dict[str, Any]:
         "vi_env": VI_ENV,
         "utc": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/capabilities")
+async def get_capabilities() -> dict[str, Any]:
+    """Catálogo SPA: available (ENABLE_*) + active runtime por entity_type."""
+    return _spa_capability_catalog()
+
+
+@app.put("/capabilities")
+async def put_capabilities(request: Request) -> JSONResponse:
+    """Merge parcial de active; vehicle off / unknown / ¬available → 400.
+
+    Siempre flush + generation+=1 (con o sin media). No resetea active.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "expected object"}, status_code=400)
+
+    raw_active = body.get("active")
+    if raw_active is None:
+        return JSONResponse(
+            {"ok": False, "error": "missing active"}, status_code=400
+        )
+    if not isinstance(raw_active, dict):
+        return JSONResponse(
+            {"ok": False, "error": "active must be object"}, status_code=400
+        )
+
+    known = {entity_type for entity_type, *_ in _SPA_CAPABILITY_DEFS}
+    available = _compute_available()
+    st = state()
+
+    for key, value in raw_active.items():
+        if key not in known:
+            return JSONResponse(
+                {"ok": False, "error": f"unknown capability: {key}"},
+                status_code=400,
+            )
+        if not isinstance(value, bool):
+            return JSONResponse(
+                {"ok": False, "error": f"active.{key} must be bool"},
+                status_code=400,
+            )
+        if key == "vehicle" and value is False:
+            return JSONResponse(
+                {"ok": False, "error": "vehicle.active cannot be false"},
+                status_code=400,
+            )
+        if value is True and not available.get(key, False):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"{key} is not available",
+                },
+                status_code=400,
+            )
+
+    for key, value in raw_active.items():
+        # Clamp active ∧ available (vehicle stays true if somehow unset).
+        st.active[key] = bool(value) and available.get(key, False)
+
+    # Ensure vehicle remains active after any successful PUT.
+    if available.get("vehicle", True):
+        st.active["vehicle"] = True
+
+    _flush_detection_session()
+    st.generation += 1
+    logger.info(
+        "Capabilities updated gen=%d active=%s",
+        st.generation,
+        {k: v for k, v in st.active.items() if v},
+    )
+    return JSONResponse(_spa_capability_catalog())
 
 
 @app.post("/ingest")

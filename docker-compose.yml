@@ -366,6 +366,19 @@ services:
       - MEDIA_POLL_INTERVAL=${MEDIA_POLL_INTERVAL:-1.0}
       - MEDIA_WATCH_INTERVAL=${MEDIA_WATCH_INTERVAL:-1.0}
       - PREVIEW_MJPEG_INTERVAL=${PREVIEW_MJPEG_INTERVAL:-0.05}
+      # Mirror SPA-relevant ENABLE_* onto adapter (same defaults as bridge).
+      # vehicle/object always available in adapter code (no ENABLE needed).
+      - ENABLE_FACE_DETECTION=${ENABLE_FACE_DETECTION:-false}
+      - ENABLE_SCENE_SEG=${ENABLE_SCENE_SEG:-false}
+      - ENABLE_POSE=${ENABLE_POSE:-false}
+      - ENABLE_SCENE_OCR=${ENABLE_SCENE_OCR:-false}
+      - ENABLE_FACE_ID=${ENABLE_FACE_ID:-false}
+      - ENABLE_SIGNS=${ENABLE_SIGNS:-false}
+      - ENABLE_SCENE_CLS=${ENABLE_SCENE_CLS:-false}
+      - ENABLE_INSTANCE_SEG=${ENABLE_INSTANCE_SEG:-false}
+      - ENABLE_SMALL_OBJECTS=${ENABLE_SMALL_OBJECTS:-false}
+      - ENABLE_ANOMALY=${ENABLE_ANOMALY:-false}
+      - ENABLE_OPEN_VOCAB=${ENABLE_OPEN_VOCAB:-false}
     volumes:
       - ./adapter:/app/adapter
       - ./imagenes_muestra:/media/images
@@ -396,6 +409,7 @@ services:
       - ADAPTER_INGEST_URL=${ADAPTER_INGEST_URL:-http://adapter:8000/ingest}
       - ADAPTER_MEDIA_CURRENT_URL=${ADAPTER_MEDIA_CURRENT_URL:-http://adapter:8000/media/current}
       - ADAPTER_PREVIEW_FRAME_URL=${ADAPTER_PREVIEW_FRAME_URL:-http://adapter:8000/preview/frame}
+      - ADAPTER_CAPABILITIES_URL=${ADAPTER_CAPABILITIES_URL:-http://adapter:8000/capabilities}
       - PADDLEX_URL=${PADDLEX_URL:-http://paddlex:8080}
       - PADDLEX_PREDICT_PATH=${PADDLEX_PREDICT_PATH:-/vehicle-attribute-recognition}
       - BRIDGE_FPS=${BRIDGE_FPS:-1}
