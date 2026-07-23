@@ -1,10 +1,8 @@
-// CapabilityPanel — toggles de visibilidad por entity_type (Fase 1).
+// CapabilityPanel — dual controls: visible (F1 event-gated) + active (F2 server).
 //
-// REQ-S3: shape lógico por capacidad es `{ visible, active? }`; `active`
-// (inferencia on/off) NO se implementa/ignora en F1 — no hay /capabilities
-// todavía (ver hard constraints del addendum). Solo se listan/habilitan
-// tipos que YA tienen eventos en el buffer actual; el resto queda
-// deshabilitado con "sin detecciones".
+// visible: client-only; disabled when entity has no events ("sin detecciones").
+// active: PUT /capabilities; enabled whenever available; vehicle locked.
+import type { CapabilityEntry } from "../api/client";
 import type { PerceptionEvent } from "../types/epp.gen";
 
 interface CapabilityDef {
@@ -46,10 +44,18 @@ const GROUPS: { title: string; items: CapabilityDef[] }[] = [
 interface Props {
   events: PerceptionEvent[];
   visibility: Record<string, boolean>;
-  onToggle: (entityType: string, visible: boolean) => void;
+  catalog: Record<string, CapabilityEntry>;
+  onToggleVisible: (entityType: string, visible: boolean) => void;
+  onToggleActive: (entityType: string, active: boolean) => void;
 }
 
-export function CapabilityPanel({ events, visibility, onToggle }: Props) {
+export function CapabilityPanel({
+  events,
+  visibility,
+  catalog,
+  onToggleVisible,
+  onToggleActive,
+}: Props) {
   const present = new Set(events.map((e) => e.entity_type));
 
   return (
@@ -59,22 +65,54 @@ export function CapabilityPanel({ events, visibility, onToggle }: Props) {
           <div className="vi-capability-group-title">{group.title}</div>
           {group.items.map((item) => {
             const hasEvents = present.has(item.entityType);
-            const checked = visibility[item.entityType] !== false;
+            const visibleChecked = visibility[item.entityType] !== false;
+            const entry = catalog[item.entityType];
+            const available = entry?.available === true;
+            const activeChecked = entry?.active === true;
+            const critical = entry?.critical === true || item.entityType === "vehicle";
+            const activeLocked = critical || !available;
             return (
-              <label
+              <div
                 key={item.entityType}
-                className={`vi-capability-item${hasEvents ? "" : " vi-capability-disabled"}`}
-                title={hasEvents ? undefined : "sin detecciones"}
+                className={`vi-capability-item${!hasEvents && !available ? " vi-capability-disabled" : ""}`}
               >
-                <input
-                  type="checkbox"
-                  checked={hasEvents && checked}
-                  disabled={!hasEvents}
-                  onChange={(e) => onToggle(item.entityType, e.target.checked)}
-                />
-                <span>{item.label}</span>
-                {!hasEvents && <em className="vi-capability-empty-hint">sin detecciones</em>}
-              </label>
+                <span className="vi-capability-label">{item.label}</span>
+                <label
+                  className="vi-capability-toggle"
+                  title={hasEvents ? "Visible" : "sin detecciones"}
+                >
+                  <input
+                    type="checkbox"
+                    checked={hasEvents && visibleChecked}
+                    disabled={!hasEvents}
+                    onChange={(e) => onToggleVisible(item.entityType, e.target.checked)}
+                    aria-label={`${item.label} visible`}
+                  />
+                  <span>vis</span>
+                </label>
+                <label
+                  className={`vi-capability-toggle${activeLocked ? " vi-capability-disabled" : ""}`}
+                  title={
+                    critical
+                      ? "Vehicle siempre activo"
+                      : available
+                        ? "Inferencia activa"
+                        : "No disponible en este deploy"
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={activeChecked}
+                    disabled={activeLocked}
+                    onChange={(e) => onToggleActive(item.entityType, e.target.checked)}
+                    aria-label={`${item.label} active`}
+                  />
+                  <span>act</span>
+                </label>
+                {!hasEvents && (
+                  <em className="vi-capability-empty-hint">sin detecciones</em>
+                )}
+              </div>
             );
           })}
         </div>

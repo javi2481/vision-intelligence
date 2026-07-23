@@ -91,9 +91,18 @@ html, body, #root {
 .vi-capability-item {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  flex-wrap: wrap;
+  gap: 0.35rem;
   font-size: 0.85rem;
-  padding: 0.15rem 0;
+  padding: 0.2rem 0;
+}
+.vi-capability-label { min-width: 5.5rem; }
+.vi-capability-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-size: 0.7rem;
+  color: var(--vi-muted);
 }
 .vi-capability-disabled { color: var(--vi-muted); }
 .vi-capability-empty-hint { font-size: 0.7rem; margin-left: auto; }
