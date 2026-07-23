@@ -94,3 +94,37 @@ export async function getHealth(): Promise<HealthResponse> {
   const res = await fetch("/health");
   return asJson<HealthResponse>(res);
 }
+
+/** Entry keyed by SPA entity_type from GET/PUT /capabilities. */
+export interface CapabilityEntry {
+  name: string;
+  available: boolean;
+  active: boolean;
+  critical?: boolean;
+}
+
+export interface CapabilitiesResponse {
+  generation: number;
+  capabilities: Record<string, CapabilityEntry>;
+}
+
+export async function getCapabilities(): Promise<CapabilitiesResponse> {
+  const res = await fetch("/capabilities");
+  return asJson<CapabilitiesResponse>(res);
+}
+
+/** Partial merge of runtime active flags. */
+export async function putCapabilities(
+  active: Record<string, boolean>,
+): Promise<CapabilitiesResponse> {
+  const res = await fetch("/capabilities", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ active }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || `PUT /capabilities failed (${res.status})`);
+  }
+  return asJson<CapabilitiesResponse>(res);
+}

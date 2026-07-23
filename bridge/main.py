@@ -60,6 +60,9 @@ ADAPTER_MEDIA_CURRENT_URL = os.getenv(
 ADAPTER_PREVIEW_FRAME_URL = os.getenv(
     "ADAPTER_PREVIEW_FRAME_URL", "http://adapter:8000/preview/frame"
 )
+ADAPTER_CAPABILITIES_URL = os.getenv(
+    "ADAPTER_CAPABILITIES_URL", "http://adapter:8000/capabilities"
+)
 MEDIA_POLL_INTERVAL = float(os.getenv("MEDIA_POLL_INTERVAL", "1.0"))
 PREVIEW_IMAGE_HEARTBEAT_SECONDS = float(
     os.getenv("PREVIEW_IMAGE_HEARTBEAT_SECONDS", "5.0")
@@ -126,6 +129,41 @@ async def fetch_current_media(client: httpx.AsyncClient) -> Optional[dict[str, A
     }
 
 
+async def fetch_active_capability_names(client: httpx.AsyncClient) -> set[str]:
+    """Registry names con active=true desde GET /capabilities.
+
+    Fallback: todos los CAPABILITIES (comportamiento pre-Fase2) si falla el GET.
+    """
+    try:
+        resp = await client.get(ADAPTER_CAPABILITIES_URL, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Capabilities fetch failed; running all: %s", exc)
+        return {cap.name for cap in CAPABILITIES}
+
+    caps = data.get("capabilities") if isinstance(data, dict) else None
+    if not isinstance(caps, dict):
+        return {cap.name for cap in CAPABILITIES}
+
+    names: set[str] = set()
+    for entry in caps.values():
+        if isinstance(entry, dict) and entry.get("active") and entry.get("name"):
+            names.add(str(entry["name"]))
+    return names
+
+
+def filter_capabilities_for_gather(active_names: set[str]) -> list:
+    """SPA-active + always vehicles + pedestrians (ENABLE short-circuits inside)."""
+    return [
+        cap
+        for cap in CAPABILITIES
+        if cap.name == "vehicles"
+        or cap.name == "pedestrians"
+        or cap.name in active_names
+    ]
+
+
 async def push_preview_frame(client: httpx.AsyncClient, jpeg: bytes) -> None:
     """POST JPEG anotado a /preview/frame. Falla en silencio."""
     try:
@@ -158,13 +196,16 @@ async def run_detections(
     h, w = frame_hires.shape[:2]
     frame_wh = (w, h)
 
+    active_names = await fetch_active_capability_names(client)
+    caps = filter_capabilities_for_gather(active_names)
+
     async def _call(cap):
         if cap.needs_frame_wh:
             return await cap.infer(client, jpeg, frame_wh=frame_wh)
         return await cap.infer(client, jpeg)
 
-    gathered = await asyncio.gather(*[_call(cap) for cap in CAPABILITIES])
-    by_name = {cap.name: result for cap, result in zip(CAPABILITIES, gathered)}
+    gathered = await asyncio.gather(*[_call(cap) for cap in caps])
+    by_name = {cap.name: result for cap, result in zip(caps, gathered)}
 
     vehicle_detections = by_name.get("vehicles")
     if vehicle_detections is None:
@@ -192,7 +233,7 @@ async def run_detections(
         object_detections
     )
 
-    for cap in CAPABILITIES:
+    for cap in caps:
         if cap.merge == "extend_scaled":
             dets = by_name.get(cap.name)
             if dets:
@@ -203,6 +244,7 @@ async def run_detections(
             if one is not None:
                 detections.append(one)
 
+    # Plate OCR remains ENABLE-only enrich (unchanged); not SPA-gated.
     await enrich_vehicles_with_plates(
         client, frame_hires, vehicle_detections, encode_jpeg
     )
@@ -226,12 +268,12 @@ async def run_image_source(
 
     detections, _degraded, preview_jpeg = await run_detections(client, frame_hires)
     detections = detections or []
-    if detections:
-        await post_json(
-            client,
-            ADAPTER_INGEST_URL,
-            {"detections": detections, "trace_id": generation},
-        )
+    # Always ingest (including []) so last_ingest_generation advances.
+    await post_json(
+        client,
+        ADAPTER_INGEST_URL,
+        {"detections": detections, "trace_id": generation},
+    )
 
     if preview_jpeg is not None:
         await push_preview_frame(client, preview_jpeg)
@@ -251,6 +293,13 @@ async def run_image_source(
             return
         if polled.get("name") != selected_name:
             logger.info("Media selection changed away from image -> %s", polled)
+            return
+        if polled.get("generation") != generation:
+            logger.info(
+                "Generation changed %s -> %s; re-run analysis",
+                generation,
+                polled.get("generation"),
+            )
             return
 
         now = time.monotonic()
