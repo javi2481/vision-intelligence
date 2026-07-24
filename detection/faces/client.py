@@ -17,8 +17,9 @@ from detection.common.tracking import IoUTracker
 logger = logging.getLogger("detection.faces")
 
 PADDLEX_FACES_URL = os.getenv("PADDLEX_FACES_URL", "http://paddlex-faces:8083")
+# Pipeline custom (object_detection + face model) → endpoint OD.
 PADDLEX_FACES_PREDICT_PATH = os.getenv(
-    "PADDLEX_FACES_PREDICT_PATH", "/face-detection"
+    "PADDLEX_FACES_PREDICT_PATH", "/object-detection"
 )
 ENABLE_FACE_DETECTION = os.getenv(
     "ENABLE_FACE_DETECTION", "false"
@@ -40,7 +41,12 @@ def normalize_face_result(data: dict[str, Any]) -> list[dict[str, Any]]:
     result = data.get("result", data)
     boxes: list[dict[str, Any]] = []
     if isinstance(result, dict):
-        raw = result.get("boxes") or result.get("faces") or []
+        raw = (
+            result.get("detectedObjects")
+            or result.get("boxes")
+            or result.get("faces")
+            or []
+        )
         if isinstance(raw, list):
             boxes = raw
     elif isinstance(result, list):

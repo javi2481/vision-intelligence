@@ -81,7 +81,7 @@ ALL_TARGETS: dict[str, tuple[str, str, str, str, str]] = {
         "PADDLEX_FACES_URL",
         "http://127.0.0.1:8083",
         "PADDLEX_FACES_PREDICT_PATH",
-        "/face-detection",
+        "/object-detection",
         "image",
     ),
     "pedestrians": (
@@ -109,7 +109,7 @@ ALL_TARGETS: dict[str, tuple[str, str, str, str, str]] = {
         "PADDLEX_FACE_ID_URL",
         "http://127.0.0.1:8087",
         "PADDLEX_FACE_ID_PREDICT_PATH",
-        "/face-recognition",
+        "/face-recognition-infer",
         "image",
     ),
     "signs": (
@@ -144,7 +144,7 @@ ALL_TARGETS: dict[str, tuple[str, str, str, str, str]] = {
         "PADDLEX_ANOMALY_URL",
         "http://127.0.0.1:8092",
         "PADDLEX_ANOMALY_PREDICT_PATH",
-        "/anomaly-detection",
+        "/image-anomaly-detection",
         "image",
     ),
     "open_vocab": (
@@ -378,6 +378,8 @@ def _predict(
         payload = {"image": b64, "prompt": prompt}
     else:
         payload = {"image": b64}
+        if suite in {"scene_cls", "anomaly", "face_id", "faces"}:
+            payload["visualize"] = False
     return _post_json(url, payload, timeout)
 
 

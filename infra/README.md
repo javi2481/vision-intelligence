@@ -94,7 +94,7 @@ Ver README raíz (§ RAM del host). Anchors `x-limits-default` (8 GB / default) 
 | OCR | Ya: PP-OCRv5 mobile (`OCR_PIPELINE_CONFIG`) |
 | Objects | PicoDet vía config object_detection |
 | Scene | PP-LiteSeg-T en YAML lane/bdd |
-| Faces | BlazeFace (default face_detection) |
+| Faces | PP-YOLOE_plus-S_face vía YAML `detection/faces/pipeline.yaml` (endpoint `/object-detection`) |
 
 ### Tune bridge
 

@@ -2,7 +2,10 @@
 
 ## Para qué sirve
 
-Detectar rostros humanos (bbox + score) vía PaddleX `face_detection`.
+Detectar rostros humanos (bbox + score) vía modelo face PaddleX
+(`PP-YOLOE_plus-S_face`) servido como pipeline `object_detection` custom
+(`detection/faces/pipeline.yaml`). PaddleX 3.7 no publica pipeline
+`face_detection`.
 
 ## Cómo funciona
 
@@ -23,11 +26,12 @@ Detectar rostros humanos (bbox + score) vía PaddleX `face_detection`.
 |------|--------|
 | Compose | `paddlex-faces` (profile `extended`) |
 | Puerto | `8083` |
-| Env | `PADDLEX_FACES_URL`, `ENABLE_FACE_DETECTION` |
+| Env | `PADDLEX_FACES_URL`, `PADDLEX_FACES_PREDICT_PATH` (default `/object-detection`), `ENABLE_FACE_DETECTION` |
 
 ## Archivos clave
 
 - `client.py` — `infer_faces`, `normalize_face_result`.
+- `pipeline.yaml` — config PaddleX montada en compose.
 
 ## Qué no es
 

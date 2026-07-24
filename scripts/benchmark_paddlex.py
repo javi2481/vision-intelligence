@@ -52,7 +52,7 @@ TARGETS: list[tuple[str, str, str, str, str]] = [
         "PADDLEX_FACES_URL",
         "http://127.0.0.1:8083",
         "PADDLEX_FACES_PREDICT_PATH",
-        "/face-detection",
+        "/object-detection",
     ),
     (
         "pedestrians",
@@ -80,7 +80,7 @@ TARGETS: list[tuple[str, str, str, str, str]] = [
         "PADDLEX_FACE_ID_URL",
         "http://127.0.0.1:8087",
         "PADDLEX_FACE_ID_PREDICT_PATH",
-        "/face-recognition",
+        "/face-recognition-infer",
     ),
     (
         "signs",

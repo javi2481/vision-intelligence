@@ -12,15 +12,17 @@ El bbox de rostro “anónimo” sigue en `faces/`.
 
 ## Gate / aviso
 
-Requiere galería/base de identidades configurada en el pipeline PaddleX.
-Sin eso, labels suelen ser `unknown`. Evaluar aspectos legales/privacidad.
+Requiere galería/base de identidades vía
+`POST /face-recognition-index-build` (imageLabelPairs). Sin índice, el infer
+(`POST /face-recognition-infer`) responde 500 (`assert indexer`).
+Evaluar aspectos legales/privacidad.
 
 ## Servicio / deps
 
 | Item | Valor |
 |------|--------|
 | Compose | `paddlex-face-id` `:8087` |
-| Env | `ENABLE_FACE_ID`, `PADDLEX_FACE_ID_URL` |
+| Env | `ENABLE_FACE_ID`, `PADDLEX_FACE_ID_URL`, `PADDLEX_FACE_ID_PREDICT_PATH` (default `/face-recognition-infer`) |
 
 ## Qué no es
 

@@ -22,7 +22,7 @@ PADDLEX_FACE_ID_URL = os.getenv(
     "PADDLEX_FACE_ID_URL", "http://paddlex-face-id:8087"
 )
 PADDLEX_FACE_ID_PREDICT_PATH = os.getenv(
-    "PADDLEX_FACE_ID_PREDICT_PATH", "/face-recognition"
+    "PADDLEX_FACE_ID_PREDICT_PATH", "/face-recognition-infer"
 )
 ENABLE_FACE_ID = os.getenv("ENABLE_FACE_ID", "false").strip().lower() in (
     "1",
@@ -46,8 +46,8 @@ def normalize_face_id_result(data: dict[str, Any]) -> list[dict[str, Any]]:
     boxes: list[dict[str, Any]] = []
     if isinstance(result, dict):
         raw = (
-            result.get("boxes")
-            or result.get("faces")
+            result.get("faces")
+            or result.get("boxes")
             or result.get("rec_results")
             or []
         )
@@ -78,6 +78,15 @@ def normalize_face_id_result(data: dict[str, Any]) -> list[dict[str, Any]]:
             or box.get("name")
             or "unknown"
         )
+        # Serving 3.7: Face.recResults = [{label, score}, ...]
+        rec_results = box.get("recResults") or box.get("rec_results") or []
+        if (identity == "unknown" or not identity) and isinstance(rec_results, list):
+            for rec in rec_results:
+                if isinstance(rec, dict) and rec.get("label"):
+                    identity = rec["label"]
+                    if score <= 0.0 and rec.get("score") is not None:
+                        score = float(rec["score"])
+                    break
         if isinstance(identity, list) and identity:
             identity = identity[0]
         coords.append(bbox)
