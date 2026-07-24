@@ -21,10 +21,11 @@ from detection.common.paddlex_client import env_flag, post_image_predict_sync
 logger = logging.getLogger("detection.tiled_infer")
 
 ENABLE_INFER_TILING = env_flag("ENABLE_INFER_TILING", "false")
+# Defaults: INFER_SLICE_WH from PR1 measure; overlap/workers/iou = supervision 0.28 API defaults.
+# https://supervision.roboflow.com/0.28.0/detection/tools/inference_slicer/
 INFER_SLICE_WH = int(os.getenv("INFER_SLICE_WH", "640"))
-INFER_OVERLAP_WH = int(os.getenv("INFER_OVERLAP_WH", "64"))
+INFER_OVERLAP_WH = int(os.getenv("INFER_OVERLAP_WH", "100"))
 INFER_TILE_THREAD_WORKERS = int(os.getenv("INFER_TILE_THREAD_WORKERS", "1"))
-INFER_TILE_IOU_THRESHOLD = float(os.getenv("INFER_TILE_IOU_THRESHOLD", "0.5"))
 
 # Mapas label→id **intra-capacidad** (NMS-A). No reutilizar en NMS-B (PR3).
 _TILE_CLASS_IDS: dict[str, dict[str, int]] = {}
@@ -157,12 +158,14 @@ def infer_tiled_sync(
             raw = normalize_response(data)
             return vi_raw_to_detections(raw, capability=capability)
 
+        # Defaults iou_threshold=0.5 / overlap_metric=IOU / NON_MAX_SUPPRESSION
+        # match supervision 0.28 InferenceSlicer (NMS capa A). After each tile,
+        # slicer calls move_detections(offset) → boxes in full-frame coords.
         slicer = sv.InferenceSlicer(
             callback=callback,
             slice_wh=sw,
             overlap_wh=ow,
             overlap_filter=sv.OverlapFilter.NON_MAX_SUPPRESSION,
-            iou_threshold=INFER_TILE_IOU_THRESHOLD,
             overlap_metric=sv.OverlapMetric.IOU,
             thread_workers=workers,
         )
