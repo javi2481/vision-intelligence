@@ -27,6 +27,7 @@ jobs:
           PYTHONPATH=. python3 tests/test_capabilities.py
           PYTHONPATH=. python3 tests/test_tiled_infer.py
           PYTHONPATH=. python3 tests/test_parse_plate_stats.py
+          PYTHONPATH=. python3 tests/test_nms_zones_pr3.py
       - name: epp.gen.ts contract in sync (REQ-S5)
         run: |
           PYTHONPATH=. python3 scripts/gen_epp_types.py

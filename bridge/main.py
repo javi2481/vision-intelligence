@@ -32,8 +32,14 @@ from bridge.media import (
     resolve_active_source,
 )
 from detection.common.geometry import encode_jpeg, maybe_resize_for_infer, scale_detections
+from detection.common.nms_cross_cap import apply_cross_cap_nms
 from detection.common.preview import draw_preview
 from detection.common.tiled_infer import ENABLE_INFER_TILING
+from detection.common.zones import (
+    absolute_polygons,
+    load_zone_configs,
+    tag_detections_with_zones,
+)
 from detection.objects import infer_objects_tiled_sync
 from detection.plates import enrich_vehicles_with_plates
 from detection.registry import (
@@ -274,7 +280,16 @@ async def run_detections(
         client, frame_hires, vehicle_detections, encode_jpeg
     )
 
-    preview_jpeg = draw_preview(frame_hires, detections)
+    # NMS-B cross-cap (capa B): entity_type via class_id_for_cross_cap_nms.
+    detections = apply_cross_cap_nms(detections)
+
+    zone_cfgs = load_zone_configs()
+    detections = tag_detections_with_zones(detections, frame_wh, zone_cfgs)
+    zone_polys = absolute_polygons(zone_cfgs, frame_wh) if zone_cfgs else None
+
+    preview_jpeg = draw_preview(
+        frame_hires, detections, zone_polygons=zone_polys
+    )
     return detections, False, preview_jpeg
 
 

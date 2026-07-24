@@ -193,6 +193,8 @@ class PerceptionEvent(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0)
     candidate_ids: list[str] = Field(default_factory=list)
     location: Optional[Location] = None
+    # Aditivo SCHEMA 1.0: clientes viejos ignoran ``zones``; no bump de versión.
+    zones: Optional[list[str]] = None
     payload: EntityPayload
 
     @field_validator("confidence")
@@ -265,6 +267,11 @@ def _normalize_detection(raw: dict[str, Any]) -> dict[str, Any]:
         "text": raw.get("text"),
         "identity": raw.get("identity"),
         "keypoints": raw.get("keypoints") if isinstance(raw.get("keypoints"), list) else None,
+        "zones": (
+            [str(z) for z in raw["zones"]]
+            if isinstance(raw.get("zones"), list)
+            else None
+        ),
     }
 
 
@@ -312,6 +319,20 @@ def _parse_occurred_at(detections: list[dict[str, Any]]) -> datetime:
     return latest or _utc_now()
 
 
+def _collect_zones(detections: list[dict[str, Any]]) -> Optional[list[str]]:
+    """Une ids de zona hit en el track (orden de primera aparición)."""
+    seen: list[str] = []
+    for det in detections:
+        zones = det.get("zones")
+        if not isinstance(zones, list):
+            continue
+        for z in zones:
+            zs = str(z)
+            if zs and zs not in seen:
+                seen.append(zs)
+    return seen or None
+
+
 def _track_context(
     detections: list[dict[str, Any]],
     observed_at: datetime,
@@ -328,6 +349,7 @@ def _track_context(
         occurred_at=_parse_occurred_at(detections),
         observed_at=observed_at,
         location=location,
+        zones=_collect_zones(detections),
     )
     return common, best, mean_score, speed_kmh
 

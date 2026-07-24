@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import cv2
+import numpy as np
 
 from detection.common.geometry import encode_jpeg
 
@@ -111,9 +112,32 @@ def preview_box_color(det: dict[str, Any]) -> tuple[int, int, int]:
     return _PREVIEW_FALLBACK_PALETTE_BGR[idx]
 
 
-def draw_preview(frame, detections: list[dict[str, Any]]) -> Optional[bytes]:
-    """Dibuja bboxes + labels EN y badge de escena. None si encode falla."""
+def draw_preview(
+    frame,
+    detections: list[dict[str, Any]],
+    *,
+    zone_polygons: Optional[list[tuple[str, Any]]] = None,
+) -> Optional[bytes]:
+    """Dibuja bboxes + labels EN, badge de escena y contornos de zona.
+
+    ``zone_polygons``: lista opcional de ``(zone_id, polygon_abs (N,2) int)``.
+    """
     canvas = frame.copy()
+
+    # Contornos de zona (antes de bboxes para que las cajas queden arriba).
+    for _zid, poly in zone_polygons or []:
+        pts = np.asarray(poly, dtype=np.int32)
+        if pts.ndim != 2 or pts.shape[0] < 3:
+            continue
+        cv2.polylines(
+            canvas,
+            [pts],
+            isClosed=True,
+            color=(0, 255, 255),
+            thickness=2,
+            lineType=cv2.LINE_AA,
+        )
+
     for det in detections or []:
         entity = str(det.get("entity_type") or "").strip().lower()
         if entity == "scene":
