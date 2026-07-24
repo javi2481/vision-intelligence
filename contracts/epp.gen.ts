@@ -94,5 +94,6 @@ export interface PerceptionEvent {
   confidence: number;
   candidate_ids: string[];
   location: Location | null;
+  zones: string[] | null;
   payload: EntityPayload;
 }

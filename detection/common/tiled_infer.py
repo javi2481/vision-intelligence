@@ -27,12 +27,13 @@ INFER_SLICE_WH = int(os.getenv("INFER_SLICE_WH", "640"))
 INFER_OVERLAP_WH = int(os.getenv("INFER_OVERLAP_WH", "100"))
 INFER_TILE_THREAD_WORKERS = int(os.getenv("INFER_TILE_THREAD_WORKERS", "1"))
 
-# Mapas label→id **intra-capacidad** (NMS-A). No reutilizar en NMS-B (PR3).
+# Mapas label→id **intra-capacidad** (NMS-A). No reutilizar en NMS-B
+# (ver detection.common.nms_cross_cap.class_id_for_cross_cap_nms).
 _TILE_CLASS_IDS: dict[str, dict[str, int]] = {}
 
 
 def class_id_for_tile_nms(label: str, *, capability: str) -> int:
-    """Id estable por label dentro de una capacidad (solo NMS del slicer)."""
+    """Id estable por label dentro de una capacidad (solo NMS del slicer / capa A)."""
     key = (label or "").strip().lower() or "_unknown"
     bucket = _TILE_CLASS_IDS.setdefault(capability, {})
     if key not in bucket:

@@ -69,8 +69,11 @@ class PerceptionEventIn(BaseModel):
     contrato completo ni importar epp_core.
     """
 
+    entity_type: str = "vehicle"
     candidate_ids: list[str] = Field(default_factory=list)
     confidence: float = 0.0
+    # Aditivo SCHEMA 1.0 — ids de PolygonZone hit (p.ej. "no_parking").
+    zones: Optional[list[str]] = None
     payload: VehiclePayloadIn = Field(default_factory=VehiclePayloadIn)
 
     model_config = {"extra": "ignore"}
@@ -78,11 +81,15 @@ class PerceptionEventIn(BaseModel):
 
 def evaluate_rule(event: PerceptionEventIn) -> Optional[str]:
     """
-    Regla MVP de alerta.
+    Reglas de alerta (orden: zona → patente/confianza).
 
-    Alerta si algún candidate_id es una patente (`patente:...`) o si la
-    confianza del evento es alta (>= 0.7). Retorna la razón o None.
+    - ``zone:no_parking``: el evento trae id de zona ``no_parking``.
+    - patente / confidence: MVP histórico.
     """
+    zones = event.zones or []
+    if "no_parking" in zones:
+        return "zone:no_parking"
+
     has_plate = any(c.startswith("patente:") for c in event.candidate_ids)
     high_confidence = event.confidence >= 0.7
 
@@ -106,6 +113,7 @@ def _append_alert(event: PerceptionEventIn, reason: str) -> None:
             "candidate_ids": event.candidate_ids,
             "confidence": event.confidence,
             "plate_text": event.payload.plate_text,
+            "zones": list(event.zones or []),
             "reason": reason,
         }
     )
