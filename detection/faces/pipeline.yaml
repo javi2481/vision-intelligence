@@ -1,0 +1,12 @@
+# PaddleX 3.7.x no expone pipeline `face_detection` (solo módulo + face_recognition).
+# Servimos BlazeFace/PP-YOLOE face vía object_detection → endpoint /object-detection.
+pipeline_name: object_detection
+
+SubModules:
+  ObjectDetection:
+    module_name: face_detection
+    model_name: PP-YOLOE_plus-S_face
+    model_dir: null
+    batch_size: 1
+    img_size: null
+    threshold: 0.3

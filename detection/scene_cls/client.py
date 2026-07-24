@@ -39,6 +39,14 @@ def normalize_scene_cls_result(data: dict[str, Any]) -> Optional[dict[str, Any]]
     label = result.get("label") or result.get("class_name")
     scores = result.get("scores") or result.get("cls_scores") or []
     labels = result.get("labels") or result.get("class_names") or []
+    # Serving 3.7: InferResult.categories = [{id, name, score}, ...]
+    categories = result.get("categories") or []
+    if not label and isinstance(categories, list) and categories:
+        top = categories[0] if isinstance(categories[0], dict) else None
+        if top:
+            label = top.get("name") or top.get("label")
+            if not scores and top.get("score") is not None:
+                scores = [top["score"]]
     if not label and labels:
         label = labels[0]
     score = float(scores[0]) if scores else float(result.get("score") or 0.0)
@@ -64,7 +72,10 @@ async def infer_scene_cls(
     try:
         resp = await client.post(
             url,
-            json={"image": base64.b64encode(jpeg).decode("ascii")},
+            json={
+                "image": base64.b64encode(jpeg).decode("ascii"),
+                "visualize": False,
+            },
             timeout=HTTP_TIMEOUT,
         )
         resp.raise_for_status()

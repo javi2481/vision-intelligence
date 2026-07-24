@@ -21,13 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ocr: requerido por el pipeline `OCR` (servicio paddlex-ocr); cv/serving
 # siguen cubriendo vehicle_attribute_recognition (servicio paddlex).
+# multimodal: solo necesario para open_vocabulary_* (servicio paddlex-open-vocab).
 #
 # Versión pineada (sin fallbacks `||`): reproducibilidad build-a-build.
 # 3.7.2 es la versión sobre la que se detectó y documentó el incidente
 # OCRv6/PIR (ver nota más abajo sobre ocr_v5_mobile.yaml) — bumpear el pin
 # requiere repetir ese chequeo de compatibilidad antes de aceptar la nueva
 # versión (ver infra/README.md § Upgrade de paddlex).
-RUN pip install --no-cache-dir "paddlex[cv,serving,ocr]==3.7.2"
+ARG PADDLEX_EXTRAS=cv,serving,ocr
+RUN pip install --no-cache-dir "paddlex[${PADDLEX_EXTRAS}]==3.7.2"
 
 COPY infra/entrypoint.paddlex.sh /entrypoint.paddlex.sh
 RUN chmod +x /entrypoint.paddlex.sh
@@ -39,6 +41,10 @@ RUN chmod +x /entrypoint.paddlex.sh
 COPY detection/plates/pipeline.yaml /opt/paddlex/pipelines/ocr_v5_mobile.yaml
 COPY detection/scene/pipeline_lane.yaml /opt/paddlex/pipelines/scene_lane.yaml
 COPY detection/scene/pipeline_bdd_marks.yaml /opt/paddlex/pipelines/scene_bdd_marks.yaml
+COPY detection/faces/pipeline.yaml /opt/paddlex/pipelines/face_detection.yaml
+# PaddleX 3.7.2 serving bug: class_ids shape (1,K) → 500 on /image-classification.
+COPY infra/patches/paddlex_image_classification.py \
+  /usr/local/lib/python3.10/dist-packages/paddlex/inference/serving/basic_serving/_pipeline_apps/image_classification.py
 
 EXPOSE 8080
 

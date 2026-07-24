@@ -122,11 +122,13 @@ services:
       - "${PADDLEX_FACES_PORT:-8083}:8083"
     environment:
       - PYTHONUNBUFFERED=1
-      - VI_PIPELINE=face_detection
+      # PaddleX 3.7 no tiene pipeline face_detection; YAML local → /object-detection
+      - VI_PIPELINE=/opt/paddlex/pipelines/face_detection.yaml
       - VI_PORT=8083
       - VI_USE_HPIP=${VI_USE_HPIP:-0}
     volumes:
       - paddlex-faces-models:/root/.paddlex
+      - ./detection/faces/pipeline.yaml:/opt/paddlex/pipelines/face_detection.yaml:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8083/docs || curl -fsS http://127.0.0.1:8083/openapi.json || exit 1"]
       <<: *paddlex-health
@@ -235,6 +237,8 @@ services:
       - VI_USE_HPIP=${VI_USE_HPIP:-0}
     volumes:
       - paddlex-scene-cls-models:/root/.paddlex
+      # Hotfix PaddleX 3.7.2 class_ids shape bug (also baked into Dockerfile).
+      - ./infra/patches/paddlex_image_classification.py:/usr/local/lib/python3.10/dist-packages/paddlex/inference/serving/basic_serving/_pipeline_apps/image_classification.py:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8089/docs || curl -fsS http://127.0.0.1:8089/openapi.json || exit 1"]
       <<: *paddlex-health
@@ -295,9 +299,19 @@ services:
 
   paddlex-open-vocab:
     profiles: ["experimental"]
-    <<: [*paddlex-cpu, *limits-extended]
+    <<: [*limits-extended]
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.paddlex
+      args:
+        BASE_IMAGE: ${PADDLE_BASE_IMAGE:-paddlepaddle/paddle:3.0.0}
+        PADDLEX_EXTRAS: cv,serving,ocr,multimodal
     image: vision-intelligence/paddlex-open-vocab:local
     container_name: vi-paddlex-open-vocab
+    restart: unless-stopped
+    networks:
+      - epp-network
+    logging: *default-logging
     ports:
       - "8093:8093"
     environment:
