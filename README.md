@@ -121,9 +121,26 @@ flags `experimental` (`ENABLE_SCENE_CLS` …), `VI_USE_HPIP`,
 PYTHONPATH=. python3 tests/test_bridge_helpers.py
 PYTHONPATH=. python3 tests/test_epp_core.py
 PYTHONPATH=. python3 tests/test_adapter_media.py
+PYTHONPATH=. python3 tests/test_eval_match.py
 ```
 
 Detalle en [tests/README.md](tests/README.md).
+
+## Accuracy harness (local gate ≠ CI)
+
+Host-side golden fixtures → HTTP predict → scored report + `failures/` + baseline diff.
+**Not a PR/CI blocker** — run on a developer machine with the stack already up.
+
+```bash
+python -m pip install -r scripts/requirements-eval.txt
+PYTHONPATH=. python scripts/download_paddlex_eval.py --packs core   # or --packs all
+PYTHONPATH=. python scripts/eval_paddlex_fixtures.py --packs core   # --pipelines suite1,suite2
+```
+
+`--packs core` is the local accuracy gate. Extended + Experimental are opt-in via
+`--packs all` (see [imagenes_muestra/README.md](imagenes_muestra/README.md)).
+Latency/HPIP remains [`scripts/benchmark_paddlex.py`](scripts/benchmark_paddlex.py)
+(accuracy ≠ latency).
 
 ## Contrato epp-core
 

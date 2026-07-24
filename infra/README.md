@@ -48,7 +48,7 @@ Imagen Docker compartida de PaddleX y su entrypoint. Los servicios
 
 ## Optimización (Fase 0)
 
-### Benchmark
+### Benchmark (latency)
 
 Con el stack up:
 
@@ -57,6 +57,11 @@ PYTHONPATH=. python3 scripts/benchmark_paddlex.py --image imagenes_muestra/TU_FO
 ```
 
 Anotar `mean_s` por servicio. Criterio para HPIP: mejora ≥ ~1.5× vs baseline.
+
+**Accuracy ≠ latency.** For a local Core accuracy gate (fixtures + IoU/OCR scoring,
+not CI), use [`scripts/download_paddlex_eval.py`](../scripts/download_paddlex_eval.py)
++ [`scripts/eval_paddlex_fixtures.py`](../scripts/eval_paddlex_fixtures.py). See
+[`imagenes_muestra/README.md`](../imagenes_muestra/README.md).
 
 ### HPIP
 
@@ -108,6 +113,7 @@ HTTP serving de cada pipeline según el servicio.
 - `Dockerfile.paddlex`
 - `entrypoint.paddlex.sh`
 - [`scripts/benchmark_paddlex.py`](../scripts/benchmark_paddlex.py)
+- [`scripts/download_paddlex_eval.py`](../scripts/download_paddlex_eval.py) / [`scripts/eval_paddlex_fixtures.py`](../scripts/eval_paddlex_fixtures.py) (accuracy, host-only)
 - [`scripts/smoke_extended.sh`](../scripts/smoke_extended.sh)
 
 ## Qué no es
