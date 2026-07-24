@@ -1,0 +1,34 @@
+{
+  "seed": 51,
+  "packs": "core",
+  "policy": "manual update only — never auto-overwrite; refresh after intentional model/pipeline upgrades",
+  "metrics": {
+    "objects": {
+      "recall": 0.3152,
+      "precision": 0.7733,
+      "n_fixtures": 20
+    },
+    "vehicles": {
+      "bbox_match_rate": 0.4691,
+      "schema_ok_rate": 1.0,
+      "n_fixtures": 19
+    },
+    "ocr_plates": {
+      "exact_match_rate": 1.0,
+      "n_fixtures": 20
+    },
+    "signs": { "recall": null, "precision": null },
+    "faces": { "recall": null, "precision": null },
+    "pose": { "recall": null, "precision": null },
+    "pedestrians": { "bbox_match_rate": null, "schema_ok_rate": null },
+    "scene": { "schema_ok_rate": null },
+    "ocr_text": { "exact_match_rate": null },
+    "instances": { "recall": null, "precision": null },
+    "small_objects": { "recall": null, "precision": null },
+    "open_vocab": { "schema_ok_rate": null },
+    "scene_cls": { "schema_ok_rate": null },
+    "anomaly": { "smoke_ok_rate": null },
+    "face_id": { "schema_ok_rate": null }
+  },
+  "notes": "Core baseline from first live E2E (feat/paddlex-eval-harness). Objects/vehicles floors reflect measured under-detection on FO COCO subset — not label taxonomy bugs. Extended/Experimental keys null until measured with --packs all."
+}

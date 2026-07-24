@@ -10,7 +10,9 @@ venv/
 *.log
 
 # Muestras locales de imagen (overlay-preview) — pesadas, no versionar.
-imagenes_muestra/
+# Ignore contents (not the dir itself) so README can be force-included.
+imagenes_muestra/*
+!imagenes_muestra/README.md
 
 # Skill registry local (rutas de máquina del desarrollador).
 .atl/
@@ -24,3 +26,6 @@ imagenes_muestra/
 /adapter/ui/spa/*
 !/adapter/ui/spa/.gitkeep
 node_modules/
+
+# Local eval report (accuracy harness)
+scripts/eval_report.json

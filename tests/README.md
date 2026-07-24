@@ -47,7 +47,13 @@ Ninguno. Requiere packages de `bridge/requirements.txt` + `adapter/requirements.
 | `test_bridge_helpers.py` | geometry, preview, vehicles, objects, media |
 | `test_epp_core.py` | consolidación / entity_type |
 | `test_adapter_media.py` | auto-select mtime |
+| `test_eval_match.py` | IoU matcher, OCR normalize, thresholds/baseline, pack registry |
+
+```bash
+PYTHONPATH=. python3 tests/test_eval_match.py
+```
 
 ## Qué no es
 
 No sustituye smoke E2E con `docker compose up`.
+No descarga FiftyOne ni llama a PaddleX en CI (`test_eval_match.py` es puro).

@@ -1,0 +1,84 @@
+# Accuracy bars — prefer false-red over false-green.
+# Core = local gate (default --packs core). Extended/Experimental = opt-in.
+# Baseline updates are MANUAL (never auto-overwrite eval_baseline.json).
+
+seed: 51
+match_iou: 0.5
+
+core:
+  objects:
+    tier: A
+    # Live Core E2E (seed 51, 20 FO COCO): recall≈0.315 precision≈0.77.
+    # Investigation: not taxonomy (COCO labels align); under-detection on dense
+    # multi-instance scenes (184 GT boxes / 58 TP). Bars set just under live
+    # with small flake margin (prefer false-red).
+    min_recall: 0.30
+    min_precision: 0.65
+  vehicles:
+    tier: B
+    # Attributes (color/type) intentionally ignored — bbox + schema only.
+    # Live Core E2E: bbox_match≈0.469 schema_ok=1.0 (19/20 fixtures).
+    min_bbox_match_rate: 0.45
+    min_schema_ok_rate: 0.95
+  ocr_plates:
+    tier: A
+    min_exact_match_rate: 0.90
+    # Flake note: synthetic plates are controlled; failures usually mean OCR path/schema drift.
+
+# Opt-in via --packs all — not part of Core gate when --packs core.
+extended:
+  signs:
+    tier: A
+    min_recall: 0.50
+    min_precision: 0.50
+  faces:
+    tier: A
+    # Synthetic faces; label may be "face" — bbox IoU match (labels relaxed in scorer).
+    min_recall: 0.70
+    min_precision: 0.50
+  pose:
+    tier: A
+    min_recall: 0.50
+    min_precision: 0.40
+  pedestrians:
+    tier: B
+    min_bbox_match_rate: 0.55
+    min_schema_ok_rate: 0.90
+  scene:
+    tier: B
+    # No pixel GT — schema/smoke honesty only.
+    min_schema_ok_rate: 0.80
+  ocr_text:
+    tier: A
+    min_exact_match_rate: 0.80
+
+experimental:
+  instances:
+    tier: A
+    min_recall: 0.45
+    min_precision: 0.40
+  small_objects:
+    tier: A
+    min_recall: 0.35
+    min_precision: 0.30
+  open_vocab:
+    tier: B
+    min_schema_ok_rate: 0.70
+  scene_cls:
+    tier: B
+    min_schema_ok_rate: 0.70
+  anomaly:
+    tier: C
+    min_smoke_ok_rate: 0.90
+  face_id:
+    tier: B
+    min_schema_ok_rate: 0.70
+    # Identity accuracy not gated — gallery is for ops/reference only.
+
+# Absolute drop vs committed baseline that still counts as pass (false-red bias = tight).
+baseline_max_regression:
+  objects_recall: 0.05
+  objects_precision: 0.05
+  vehicles_bbox_match_rate: 0.05
+  vehicles_schema_ok_rate: 0.02
+  ocr_plates_exact_match_rate: 0.05
