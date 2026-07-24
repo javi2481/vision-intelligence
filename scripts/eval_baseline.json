@@ -4,18 +4,18 @@
   "policy": "manual update only — never auto-overwrite; refresh after intentional model/pipeline upgrades",
   "metrics": {
     "objects": {
-      "recall": null,
-      "precision": null,
-      "n_fixtures": null
+      "recall": 0.3152,
+      "precision": 0.7733,
+      "n_fixtures": 20
     },
     "vehicles": {
-      "bbox_match_rate": null,
-      "schema_ok_rate": null,
-      "n_fixtures": null
+      "bbox_match_rate": 0.4691,
+      "schema_ok_rate": 1.0,
+      "n_fixtures": 19
     },
     "ocr_plates": {
-      "exact_match_rate": null,
-      "n_fixtures": null
+      "exact_match_rate": 1.0,
+      "n_fixtures": 20
     },
     "signs": { "recall": null, "precision": null },
     "faces": { "recall": null, "precision": null },
@@ -30,5 +30,5 @@
     "anomaly": { "smoke_ok_rate": null },
     "face_id": { "schema_ok_rate": null }
   },
-  "notes": "Placeholder baseline. Core metrics gate local accuracy. Extended/Experimental keys are opt-in (null until measured)."
+  "notes": "Core baseline from first live E2E (feat/paddlex-eval-harness). Objects/vehicles floors reflect measured under-detection on FO COCO subset — not label taxonomy bugs. Extended/Experimental keys null until measured with --packs all."
 }
