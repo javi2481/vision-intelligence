@@ -100,7 +100,11 @@ Ver README raíz (§ RAM del host). Anchors `x-limits-default` (8 GB / default) 
 
 | Var | Default | Nota |
 |-----|---------|------|
-| `BRIDGE_MAX_WIDTH` | 960 | Max JPEG width to PaddleX (foto one-shot). Lower if OOMKilled; raising is a measured change (tiling plan PR2), not a casual tweak |
+| `BRIDGE_MAX_WIDTH` | 1920 | Max JPEG width for non-tiled caps (foto one-shot). Lower if OOMKilled. With `ENABLE_INFER_TILING`, vehicles/objects use `INFER_SLICE_WH` on hires |
+| `ENABLE_INFER_TILING` | false | SAHI `InferenceSlicer` for vehicles/objects (NMS-A / IOU) |
+| `INFER_SLICE_WH` | 640 | Tile size px (PR1 measured) |
+| `INFER_OVERLAP_WH` | 64 | Tile overlap px (`< INFER_SLICE_WH`) |
+| `INFER_TILE_THREAD_WORKERS` | 1 | Slicer thread pool (keep 1 unless measured) |
 | `HTTP_TIMEOUT` | 30 | Subir si scene/seg tarda |
 | `OCR_TOPK` / `OCR_HTTP_TIMEOUT` | 3 / 5 | Limitar costo OCR |
 

@@ -64,10 +64,11 @@ def parse_attr_labels(
     return color, vtype
 
 
-def normalize_vehicle_result(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Traduce respuesta vehicle_attribute_recognition → dicts del adapter.
+def parse_vehicle_boxes(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Traduce respuesta vehicle_attribute_recognition → dicts crudos (sin track_id).
 
     Soporta shapes serving (`vehicles`) y predict local (`boxes`).
+    Usado por infer full-frame y por InferenceSlicer (NMS-A).
     """
     result = data.get("result", data)
     boxes: list[dict[str, Any]] = []
@@ -91,7 +92,6 @@ def normalize_vehicle_result(data: dict[str, Any]) -> list[dict[str, Any]]:
             ):
                 boxes.append(item)
 
-    coords: list[list[float]] = []
     meta: list[dict[str, Any]] = []
     for box in boxes:
         if not isinstance(box, dict):
@@ -117,7 +117,6 @@ def normalize_vehicle_result(data: dict[str, Any]) -> list[dict[str, Any]]:
             scores = list(box.get("cls_scores") or [])
 
         color, vtype = parse_attr_labels(labels, scores)
-        coords.append(bbox)
         meta.append(
             {
                 "label": vtype or "vehicle",
@@ -128,9 +127,17 @@ def normalize_vehicle_result(data: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
                 "color": color,
                 "bbox": bbox,
+                "entity_type": "vehicle",
             }
         )
+    return meta
 
+
+def finalize_vehicle_detections(
+    meta: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Asigna track_id v-* / plate / frame_ts a dicts crudos de vehicles."""
+    coords = [m["bbox"] for m in meta]
     track_ids = _tracker.assign(coords)
     now = datetime.now(timezone.utc).isoformat()
     detections: list[dict[str, Any]] = []
@@ -140,7 +147,7 @@ def normalize_vehicle_result(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "track_id": f"v-{tid}",
                 "label": m["label"],
                 "score": m["score"],
-                "color": m["color"],
+                "color": m.get("color"),
                 "bbox": m["bbox"],
                 "plate": None,
                 "frame_ts": now,
@@ -148,6 +155,29 @@ def normalize_vehicle_result(data: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return detections
+
+
+def normalize_vehicle_result(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Traduce respuesta vehicle_attribute_recognition → dicts del adapter."""
+    return finalize_vehicle_detections(parse_vehicle_boxes(data))
+
+
+def infer_vehicles_tiled_sync(frame_hires) -> Optional[list[dict[str, Any]]]:
+    """InferenceSlicer sync sobre hires; track_id post-slicer. None si todos fallan."""
+    from detection.common.tiled_infer import infer_tiled_sync
+
+    raw = infer_tiled_sync(
+        frame_hires,
+        base_url=PADDLEX_URL,
+        predict_path=PADDLEX_PREDICT_PATH,
+        normalize_response=parse_vehicle_boxes,
+        capability="vehicles",
+        timeout=HTTP_TIMEOUT,
+        log=logger,
+    )
+    if raw is None:
+        return None
+    return finalize_vehicle_detections(raw)
 
 
 def decode_paddlex_result_image(data: dict[str, Any]) -> Optional[bytes]:

@@ -95,7 +95,9 @@ Slicer sobre **frame_hires**. Caps no tileadas: JPEG `frame_infer` + scale en su
 Función **`class_id_for_tile_nms(...)`** (mapa label→id **dentro de la capacidad**). Solo para el NMS interno del slicer. **No** reutilizar en PR3.
 
 ### NMS capa A
-`overlap_filter=NON_MAX_SUPPRESSION`, `overlap_metric=IOU`, `thread_workers=1`. Documentar vs capa B.
+`overlap_filter=NON_MAX_SUPPRESSION`, `overlap_metric=IOU`, `thread_workers=1`.
+Implementado en [`detection/common/tiled_infer.py`](detection/common/tiled_infer.py)
+(`infer_tiled_sync` + `class_id_for_tile_nms`). Documentar vs capa B.
 
 ### Exit criteria PR2
 Core bridge-tiles ≥ baseline PR1 (960); test tiling on/off OK; dry-run deps sin `opencv-python` GUI duplicado; harness usa sync core; doc NMS-A; default ancho 1920.

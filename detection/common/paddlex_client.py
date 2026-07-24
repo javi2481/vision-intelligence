@@ -28,6 +28,37 @@ def is_paddlex_ok(data: Any) -> bool:
     return data.get("errorCode") in (None, 0, "0")
 
 
+def _build_predict_body(
+    jpeg: bytes,
+    *,
+    image_field: str = "image",
+    extra_json: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        image_field: base64.b64encode(jpeg).decode("ascii"),
+    }
+    if extra_json:
+        body.update(extra_json)
+    return body
+
+
+def _handle_predict_payload(
+    data: Any,
+    *,
+    log: logging.Logger,
+    label: str,
+    warn_on_error: bool,
+) -> Optional[dict[str, Any]]:
+    if not is_paddlex_ok(data):
+        err = data.get("errorMsg") if isinstance(data, dict) else data
+        if warn_on_error:
+            log.warning("%s error: %s", label, err)
+        else:
+            log.debug("%s error: %s", label, err)
+        return None
+    return data if isinstance(data, dict) else None
+
+
 async def post_image_predict(
     client: httpx.AsyncClient,
     *,
@@ -44,11 +75,9 @@ async def post_image_predict(
     """POST JPEG en base64 al predict path. None ante fallo de red/errorCode."""
     log = log or logger
     url = f"{base_url.rstrip('/')}{predict_path}"
-    body: dict[str, Any] = {
-        image_field: base64.b64encode(jpeg).decode("ascii"),
-    }
-    if extra_json:
-        body.update(extra_json)
+    body = _build_predict_body(
+        jpeg, image_field=image_field, extra_json=extra_json
+    )
     try:
         resp = await client.post(
             url, json=body, timeout=timeout if timeout is not None else DEFAULT_HTTP_TIMEOUT
@@ -63,11 +92,46 @@ async def post_image_predict(
             log.debug("%s infer error (isolated): %s", label, exc)
         return None
 
-    if not is_paddlex_ok(data):
-        err = data.get("errorMsg") if isinstance(data, dict) else data
+    return _handle_predict_payload(
+        data, log=log, label=label, warn_on_error=warn_on_error
+    )
+
+
+def post_image_predict_sync(
+    client: httpx.Client,
+    *,
+    base_url: str,
+    predict_path: str,
+    jpeg: bytes,
+    timeout: Optional[float] = None,
+    image_field: str = "image",
+    extra_json: Optional[dict[str, Any]] = None,
+    log: Optional[logging.Logger] = None,
+    label: str = "paddlex",
+    warn_on_error: bool = False,
+) -> Optional[dict[str, Any]]:
+    """POST sync JPEG→PaddleX (InferenceSlicer callback / harness)."""
+    log = log or logger
+    url = f"{base_url.rstrip('/')}{predict_path}"
+    body = _build_predict_body(
+        jpeg, image_field=image_field, extra_json=extra_json
+    )
+    try:
+        resp = client.post(
+            url,
+            json=body,
+            timeout=timeout if timeout is not None else DEFAULT_HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        msg = "%s infer error: %s"
         if warn_on_error:
-            log.warning("%s error: %s", label, err)
+            log.warning(msg, label, exc)
         else:
-            log.debug("%s error: %s", label, err)
+            log.debug("%s infer error (isolated): %s", label, exc)
         return None
-    return data
+
+    return _handle_predict_payload(
+        data, log=log, label=label, warn_on_error=warn_on_error
+    )

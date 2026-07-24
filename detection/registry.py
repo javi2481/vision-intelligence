@@ -107,6 +107,8 @@ def reset_all_trackers() -> None:
 
 def capability_status_line() -> str:
     """Resumen compacto para el log de arranque del bridge."""
+    from detection.common.tiled_infer import ENABLE_INFER_TILING, INFER_SLICE_WH
+
     return (
         f"paddlex={vehicles_client.PADDLEX_URL}{vehicles_client.PADDLEX_PREDICT_PATH} "
         f"ocr={PADDLEX_OCR_URL if ENABLE_PLATE_OCR or ENABLE_SCENE_OCR else 'off'} "
@@ -116,7 +118,8 @@ def capability_status_line() -> str:
         f"pose={ENABLE_POSE} text={ENABLE_SCENE_OCR} face_id={ENABLE_FACE_ID} "
         f"signs={ENABLE_SIGNS} exp[scene_cls={ENABLE_SCENE_CLS} "
         f"inst={ENABLE_INSTANCE_SEG} small={ENABLE_SMALL_OBJECTS} "
-        f"anom={ENABLE_ANOMALY} ov={ENABLE_OPEN_VOCAB}]"
+        f"anom={ENABLE_ANOMALY} ov={ENABLE_OPEN_VOCAB}] "
+        f"tiling={ENABLE_INFER_TILING} slice={INFER_SLICE_WH}"
     )
 
 

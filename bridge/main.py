@@ -33,6 +33,8 @@ from bridge.media import (
 )
 from detection.common.geometry import encode_jpeg, maybe_resize_for_infer, scale_detections
 from detection.common.preview import draw_preview
+from detection.common.tiled_infer import ENABLE_INFER_TILING
+from detection.objects import infer_objects_tiled_sync
 from detection.plates import enrich_vehicles_with_plates
 from detection.registry import (
     CAPABILITIES,
@@ -42,6 +44,7 @@ from detection.registry import (
     merge_person_attributes,
     reset_all_trackers,
 )
+from detection.vehicles import infer_vehicles_tiled_sync
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -187,6 +190,10 @@ async def run_detections(
         (detections, degraded, preview_jpeg).
         detections is None = saltar (encode/vehicles falló).
         Capacidades opcionales no degradan el bridge.
+
+    Invariante coords: cada capacidad entrega cajas en hires antes de merge.
+    Con ENABLE_INFER_TILING, vehicles/objects usan slicer sobre hires (sin
+    scale_detections). Caps no tileadas escalan en su rama con scale_*.
     """
     frame_infer, scale_x, scale_y = maybe_resize_for_infer(frame_hires)
     jpeg = encode_jpeg(frame_infer)
@@ -198,26 +205,44 @@ async def run_detections(
 
     active_names = await fetch_active_capability_names(client)
     caps = filter_capabilities_for_gather(active_names)
+    tiling = ENABLE_INFER_TILING
+    # Tiled caps run via to_thread on hires; exclude from JPEG gather.
+    tiled_names = {"vehicles", "objects"} if tiling else set()
+    caps_gather = [c for c in caps if c.name not in tiled_names]
+    want_objects = any(c.name == "objects" for c in caps)
 
     async def _call(cap):
         if cap.needs_frame_wh:
             return await cap.infer(client, jpeg, frame_wh=frame_wh)
         return await cap.infer(client, jpeg)
 
-    gathered = await asyncio.gather(*[_call(cap) for cap in caps])
-    by_name = {cap.name: result for cap, result in zip(caps, gathered)}
+    gathered = await asyncio.gather(*[_call(cap) for cap in caps_gather])
+    by_name = {cap.name: result for cap, result in zip(caps_gather, gathered)}
 
-    vehicle_detections = by_name.get("vehicles")
+    if tiling:
+        vehicle_detections = await asyncio.to_thread(
+            infer_vehicles_tiled_sync, frame_hires
+        )
+    else:
+        vehicle_detections = by_name.get("vehicles")
+        if vehicle_detections is not None:
+            scale_detections(vehicle_detections, scale_x, scale_y)
+
     if vehicle_detections is None:
         await notify_degraded(client)
         return None, True, None
 
-    scale_detections(vehicle_detections, scale_x, scale_y)
+    if tiling and want_objects:
+        object_raw = await asyncio.to_thread(
+            infer_objects_tiled_sync, frame_hires
+        )
+    else:
+        object_raw = by_name.get("objects")
+        if object_raw:
+            scale_detections(object_raw, scale_x, scale_y)
 
-    object_raw = by_name.get("objects")
     if object_raw:
         object_detections = attach_object_track_ids(object_raw)
-        scale_detections(object_detections, scale_x, scale_y)
         object_detections = merge_coco_detections(
             vehicle_detections, object_detections
         )
@@ -233,7 +258,7 @@ async def run_detections(
         object_detections
     )
 
-    for cap in caps:
+    for cap in caps_gather:
         if cap.merge == "extend_scaled":
             dets = by_name.get(cap.name)
             if dets:
