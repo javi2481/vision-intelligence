@@ -335,6 +335,25 @@ def compare_to_baseline(
 # ---------------------------------------------------------------------------
 
 
+def _read_jpeg(path: Path, *, via_bridge_preprocess: bool = False) -> bytes:
+    """Load fixture JPEG; optionally apply bridge maybe_resize_for_infer (no tiles)."""
+    raw = path.read_bytes()
+    if not via_bridge_preprocess:
+        return raw
+    import cv2
+    import numpy as np
+
+    from detection.common.geometry import encode_jpeg, maybe_resize_for_infer
+
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return raw
+    frame_infer, _sx, _sy = maybe_resize_for_infer(frame)
+    encoded = encode_jpeg(frame_infer)
+    return encoded if encoded is not None else raw
+
+
 def _post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     req = Request(
@@ -557,6 +576,7 @@ def score_detection_tier_a(
     failures_root: Path,
     *,
     require_labels: bool = True,
+    via_bridge_preprocess: bool = False,
 ) -> dict[str, Any]:
     from detection.common.tracking import iou
 
@@ -565,7 +585,7 @@ def score_detection_tier_a(
     fixtures = gt.get("fixtures") or []
     for fx in fixtures:
         path = out / fx["file"]
-        jpeg = path.read_bytes()
+        jpeg = _read_jpeg(path, via_bridge_preprocess=via_bridge_preprocess)
         try:
             data = _predict(suite, jpeg, timeout)
             dets = _normalize_detections(suite, data)
@@ -620,6 +640,8 @@ def score_detection_tier_b(
     iou_threshold: float,
     timeout: float,
     failures_root: Path,
+    *,
+    via_bridge_preprocess: bool = False,
 ) -> dict[str, Any]:
     """Bbox + schema; attributes / class labels ignored."""
     from detection.common.tracking import iou
@@ -629,7 +651,7 @@ def score_detection_tier_b(
     fixtures = gt.get("fixtures") or []
     for fx in fixtures:
         path = out / fx["file"]
-        jpeg = path.read_bytes()
+        jpeg = _read_jpeg(path, via_bridge_preprocess=via_bridge_preprocess)
         try:
             data = _predict(suite, jpeg, timeout)
             dets = _normalize_detections(suite, data)
@@ -691,12 +713,14 @@ def score_ocr_text_suite(
     gt: dict[str, Any],
     timeout: float,
     failures_root: Path,
+    *,
+    via_bridge_preprocess: bool = False,
 ) -> dict[str, Any]:
     fixtures = gt.get("fixtures") or []
     hits = 0
     for fx in fixtures:
         path = out / fx["file"]
-        jpeg = path.read_bytes()
+        jpeg = _read_jpeg(path, via_bridge_preprocess=via_bridge_preprocess)
         expect = normalize_ocr_text(fx.get("text"))
         try:
             data = _predict(suite, jpeg, timeout)
@@ -729,13 +753,15 @@ def score_tier_c_smoke(
     gt: dict[str, Any],
     timeout: float,
     failures_root: Path,
+    *,
+    via_bridge_preprocess: bool = False,
 ) -> dict[str, Any]:
     """Tier C: HTTP + normalize succeeds (no accuracy claim)."""
     fixtures = gt.get("fixtures") or []
     ok = 0
     for fx in fixtures:
         path = out / fx["file"]
-        jpeg = path.read_bytes()
+        jpeg = _read_jpeg(path, via_bridge_preprocess=via_bridge_preprocess)
         try:
             data = _predict(suite, jpeg, timeout)
             dets = _normalize_detections(suite, data)
@@ -794,16 +820,38 @@ def score_suite(
     iou_threshold: float,
     timeout: float,
     failures_root: Path,
+    *,
+    via_bridge_preprocess: bool = False,
 ) -> dict[str, Any]:
     meta = PACKS.get(suite) or {}
     tier = str(gt.get("tier") or meta.get("tier") or "A").upper()
     if suite in ("ocr_plates", "ocr_text"):
-        return score_ocr_text_suite(suite, out, gt, timeout, failures_root)
+        return score_ocr_text_suite(
+            suite,
+            out,
+            gt,
+            timeout,
+            failures_root,
+            via_bridge_preprocess=via_bridge_preprocess,
+        )
     if tier == "C":
-        return score_tier_c_smoke(suite, out, gt, timeout, failures_root)
+        return score_tier_c_smoke(
+            suite,
+            out,
+            gt,
+            timeout,
+            failures_root,
+            via_bridge_preprocess=via_bridge_preprocess,
+        )
     if tier == "B":
         return score_detection_tier_b(
-            suite, out, gt, iou_threshold, timeout, failures_root
+            suite,
+            out,
+            gt,
+            iou_threshold,
+            timeout,
+            failures_root,
+            via_bridge_preprocess=via_bridge_preprocess,
         )
     # Tier A detection — faces/pose may use loose labels (face / person_pose)
     require_labels = suite not in ("faces", "pose")
@@ -815,6 +863,7 @@ def score_suite(
         timeout,
         failures_root,
         require_labels=require_labels,
+        via_bridge_preprocess=via_bridge_preprocess,
     )
 
 
@@ -827,6 +876,7 @@ def run_eval(
     timeout: float,
     *,
     packs_arg: str = "core",
+    via_bridge_preprocess: bool = False,
 ) -> int:
     thresholds = _load_yaml(thresholds_path)
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
@@ -865,7 +915,13 @@ def run_eval(
         tier = gt.get("tier") or PACKS.get(suite, {}).get("tier")
         print(f"==> eval {suite} (tier={tier})")
         metrics[suite] = score_suite(
-            suite, out, gt, iou_threshold, timeout, failures_root
+            suite,
+            out,
+            gt,
+            iou_threshold,
+            timeout,
+            failures_root,
+            via_bridge_preprocess=via_bridge_preprocess,
         )
 
     if hard_error:
@@ -885,6 +941,7 @@ def run_eval(
         "seed": SEED,
         "packs": packs_arg,
         "suites": suites,
+        "via_bridge_preprocess": via_bridge_preprocess,
         "metrics": metrics,
         "threshold_breaches": breaches,
         "baseline_regressions": regressions,
@@ -930,6 +987,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Where to write the JSON report (not committed)",
     )
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--via-bridge-preprocess",
+        action="store_true",
+        help=(
+            "Apply detection.common.geometry.maybe_resize_for_infer before POST "
+            "(PR1 baseline; no tiling). Uses current BRIDGE_MAX_WIDTH default."
+        ),
+    )
     args = parser.parse_args(argv)
 
     out = Path(args.out).resolve()
@@ -958,6 +1023,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         report_path=Path(args.report),
         timeout=args.timeout,
         packs_arg=args.packs,
+        via_bridge_preprocess=bool(args.via_bridge_preprocess),
     )
 
 

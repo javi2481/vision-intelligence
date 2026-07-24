@@ -9,6 +9,8 @@ from detection.plates.client import (
     enrich_vehicles_with_plates,
     infer_plate_ocr,
     parse_plate,
+    plate_parse_stats,
+    reset_plate_parse_stats,
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "enrich_vehicles_with_plates",
     "infer_plate_ocr",
     "parse_plate",
+    "plate_parse_stats",
+    "reset_plate_parse_stats",
 ]

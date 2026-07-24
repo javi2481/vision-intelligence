@@ -29,3 +29,4 @@ node_modules/
 
 # Local eval report (accuracy harness)
 scripts/eval_report.json
+scripts/infer_slice_measure.json

@@ -15,40 +15,45 @@ Cada PR es reversible y medible. CLAHE y deskew **no entran**. Dos capas de NMS 
 
 ```mermaid
 flowchart LR
-  pr1[PR1 baseline y limpieza]
-  pr2[PR2 InferenceSlicer]
-  pr3[PR3 NMS cross-cap y zonas]
+  pr1[PR1 baseline at 960]
+  pr2[PR2 slicer plus width 1920]
+  pr3[PR3 NMS-B plus zones]
   pr1 --> pr2 --> pr3
 ```
 
 ---
 
-## PR1 — Limpieza RTSP + defaults + medición (cero cambio de detección)
+## PR1 — Medición + wording (cero cambio del **código** de inferencia)
 
-**Objetivo:** baseline atribuible y el número que fija `slice_wh` en PR2. El path de inferencia del bridge **no** cambia (salvo default de ancho y wording).
+**Objetivo:** baseline atribuible al estado **actual** (`BRIDGE_MAX_WIDTH` default **960**) y el número que fija `slice_wh` en PR2. El path de inferencia del bridge **no** cambia.
 
 ### Decisiones fijadas
-- `BRIDGE_MAX_WIDTH` default **960 → 1920** en [`detection/common/geometry.py`](detection/common/geometry.py), [`.env.example`](.env.example), [`docker-compose.yml`](docker-compose.yml).
-- Quitar menciones RTSP en [`bridge/main.py`](bridge/main.py) / [`bridge/README.md`](bridge/README.md); docs “CPU saturada / 640” → foto one-shot + OOM opcional.
+- **No** subir `BRIDGE_MAX_WIDTH` en PR1. El default sigue **960** en [`detection/common/geometry.py`](detection/common/geometry.py), [`.env.example`](.env.example), [`docker-compose.yml`](docker-compose.yml). PR1 solo reescribe el **comentario** que explica el 960 (foto one-shot / OOM opcional), no el número. Prohibido “aprovechar” el wording para meter 1920.
+- Wording “CPU saturada / 640” → foto one-shot + OOM opcional en [`.env.example`](.env.example) e [`infra/README.md`](infra/README.md). Las negaciones útiles (“No abre RTSP…”) en [`bridge/main.py`](bridge/main.py) / [`bridge/README.md`](bridge/README.md) **se quedan**.
 - `BRIDGE_FPS` / `DEMO_MODE` se mantienen.
+- Baseline de medición = **960**, sin excepción (atribuible para PR2).
 
 ### Medición (obligatoria)
-1. **Input efectivo PaddleX (vehicles + objects):** medir resize interno (hipótesis ~640, **no asumir**). Resultado = candidato **`INFER_SLICE_WH`**.
+1. **Input efectivo PaddleX (vehicles + objects):** medir tamaño del JPEG tras `maybe_resize_for_infer` y, si la respuesta expone imagen, el tamaño decodificado (hipótesis ~640 interna — **no asumir**). Resultado = candidato **`INFER_SLICE_WH`**.
 2. **Histograma de anchos de bbox** sobre GT `--packs core`.
 3. **Harness bridge-side:** `--via-bridge-preprocess` con el resize actual del bridge (sin tiles). Cableado para que PR2 enchufe el mismo núcleo sync.
 4. **Contador en `parse_plate`:** totales / rechazados regex / aceptados.
 
 ### Exit criteria PR1
-Baseline Core (direct + via-bridge-resize); `INFER_SLICE_WH` propuesto; RTSP limpio; default 1920.
+Baseline Core (direct + via-bridge-resize a **960**); `INFER_SLICE_WH` propuesto; wording limpio; **default sigue 960**.
 
 ---
 
-## PR2 — `sv.InferenceSlicer` + invariante de coordenadas
+## PR2 — `sv.InferenceSlicer` + invariante de coordenadas + default 1920
 
-**Objetivo:** resolución efectiva constante por tile en vehicles/objects, medible vs baseline PR1, sin OOM ni doble escalado.
+**Objetivo:** resolución efectiva constante por tile en vehicles/objects, medible vs baseline PR1 (960), sin OOM ni doble escalado.
+
+### Default de ancho (aquí, no en PR1)
+- `BRIDGE_MAX_WIDTH` default **960 → 1920** en geometry / `.env.example` / compose.
+- Con slicer, el ancho del bridge **deja de gobernar** la resolución de detección tileada (pasa a `INFER_SLICE_WH`). `BRIDGE_MAX_WIDTH` queda para caps **no** tileadas. El costo RAM de 8 GB se evalúa **junto** al tiling.
 
 ### Invariante de coordenadas (obligatorio — bug silencioso si falta)
-Hoy [`bridge/main.py`](bridge/main.py) `run_detections` hace `scale_detections(..., scale_x, scale_y)` global sobre vehicles/objects tras el gather. El slicer ya devuelve **hires** vía `move_detections`. Si esas `scale_detections` quedan, los boxes tileados se **inflan** otra vez: no crashea; `merge_coco_detections` deja de dedupear (IoU nunca > 0.5 → cada auto dos veces); `merge_person_attributes` cruza attrs (path infer) contra persons tileados (hires) y también falla en silencio.
+Hoy [`bridge/main.py`](bridge/main.py) `run_detections` escala vehicles/objects (y peats/`extend_scaled`) tras el gather. El slicer ya devuelve **hires** vía `move_detections`. Si esas `scale_detections` quedan sobre cajas tileadas, los boxes se **inflan** otra vez: no crashea; `merge_coco_detections` deja de dedupear (IoU nunca > 0.5 → cada auto dos veces); `merge_person_attributes` falla en silencio.
 
 **Regla:** cada capacidad entrega cajas en **coords hires antes de salir de su rama**.
 - Tileada (vehicles/objects con slicer): el slicer ya trasladó → **no** re-escalar.
@@ -93,7 +98,7 @@ Función **`class_id_for_tile_nms(...)`** (mapa label→id **dentro de la capaci
 `overlap_filter=NON_MAX_SUPPRESSION`, `overlap_metric=IOU`, `thread_workers=1`. Documentar vs capa B.
 
 ### Exit criteria PR2
-Core bridge-tiles ≥ baseline; test tiling on/off OK; dry-run deps sin `opencv-python` GUI duplicado; harness usa sync core; doc NMS-A.
+Core bridge-tiles ≥ baseline PR1 (960); test tiling on/off OK; dry-run deps sin `opencv-python` GUI duplicado; harness usa sync core; doc NMS-A; default ancho 1920.
 
 ---
 
@@ -116,7 +121,8 @@ Antes del NMS-B: **remapear** siempre con `class_id_for_cross_cap_nms`. Si se re
 ### Zonas
 - Config [0,1]; runtime **`pts * [w, h]`** → `PolygonZone(polygon=abs int64)`. **Prohibido** `denormalize_boxes` para polígonos.
 - `trigger` sin ByteTrack.
-- Tag `zones` → epp opcional; `SCHEMA_VERSION` 1.0; `gen_epp_types` + rules `zone:no_parking`.
+- Tag `zones` → epp **opcional aditivo**; **`SCHEMA_VERSION` permanece `"1.0"`** (backward-compatible: cliente viejo ignora `zones`). Bump solo si rules-sink **exige** presencia de `zones`.
+- `gen_epp_types` + rules `zone:no_parking`.
 - Preview: contorno (`PolygonZoneAnnotator` / `draw_polygon`).
 
 ### Tests PR3
@@ -137,6 +143,6 @@ NMS-B no borra anidados; zones bridge → epp → rules; tipos TS regenerados; t
 ---
 
 ## Orden de merge
-1. PR1 → baseline + `INFER_SLICE_WH`.
-2. PR2 → sync core + invariante hires + deps OpenCV resueltas + harness tiles.
-3. PR3 → remap class_id + NMS-B + zonas.
+1. PR1 → baseline a **960** + `INFER_SLICE_WH` propuesto (sin cambiar default de ancho).
+2. PR2 → sync core + invariante hires + deps OpenCV + default **1920** + harness tiles.
+3. PR3 → remap class_id + NMS-B + zonas (SCHEMA 1.0 aditivo).
