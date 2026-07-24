@@ -354,6 +354,36 @@ def _read_jpeg(path: Path, *, via_bridge_preprocess: bool = False) -> bytes:
     return encoded if encoded is not None else raw
 
 
+def _load_bgr_frame(path: Path):
+    """Decode fixture to BGR ndarray for tiled sync harness."""
+    import cv2
+    import numpy as np
+
+    arr = np.frombuffer(path.read_bytes(), dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise RuntimeError(f"cannot decode fixture image: {path}")
+    return frame
+
+
+def _detections_via_tiled_sync(suite: str, path: Path) -> list[dict[str, Any]]:
+    """Host-side call to infer_*_tiled_sync (same núcleo as bridge; no asyncio)."""
+    frame = _load_bgr_frame(path)
+    if suite == "vehicles":
+        from detection.vehicles.client import infer_vehicles_tiled_sync
+
+        dets = infer_vehicles_tiled_sync(frame)
+    elif suite == "objects":
+        from detection.objects.client import infer_objects_tiled_sync
+
+        dets = infer_objects_tiled_sync(frame)
+    else:
+        raise RuntimeError(f"--via-tiled-sync only supports vehicles/objects, got {suite}")
+    if dets is None:
+        raise RuntimeError(f"tiled sync failed for {suite} ({path.name})")
+    return dets
+
+
 def _post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     req = Request(
@@ -577,6 +607,7 @@ def score_detection_tier_a(
     *,
     require_labels: bool = True,
     via_bridge_preprocess: bool = False,
+    via_tiled_sync: bool = False,
 ) -> dict[str, Any]:
     from detection.common.tracking import iou
 
@@ -585,10 +616,13 @@ def score_detection_tier_a(
     fixtures = gt.get("fixtures") or []
     for fx in fixtures:
         path = out / fx["file"]
-        jpeg = _read_jpeg(path, via_bridge_preprocess=via_bridge_preprocess)
         try:
-            data = _predict(suite, jpeg, timeout)
-            dets = _normalize_detections(suite, data)
+            if via_tiled_sync:
+                dets = _detections_via_tiled_sync(suite, path)
+            else:
+                jpeg = _read_jpeg(path, via_bridge_preprocess=via_bridge_preprocess)
+                data = _predict(suite, jpeg, timeout)
+                dets = _normalize_detections(suite, data)
         except Exception as exc:  # noqa: BLE001
             _write_failure(
                 failures_root, suite, fx["id"], fx["file"], f"predict_error: {exc}"
@@ -642,6 +676,7 @@ def score_detection_tier_b(
     failures_root: Path,
     *,
     via_bridge_preprocess: bool = False,
+    via_tiled_sync: bool = False,
 ) -> dict[str, Any]:
     """Bbox + schema; attributes / class labels ignored."""
     from detection.common.tracking import iou
@@ -651,10 +686,13 @@ def score_detection_tier_b(
     fixtures = gt.get("fixtures") or []
     for fx in fixtures:
         path = out / fx["file"]
-        jpeg = _read_jpeg(path, via_bridge_preprocess=via_bridge_preprocess)
         try:
-            data = _predict(suite, jpeg, timeout)
-            dets = _normalize_detections(suite, data)
+            if via_tiled_sync:
+                dets = _detections_via_tiled_sync(suite, path)
+            else:
+                jpeg = _read_jpeg(path, via_bridge_preprocess=via_bridge_preprocess)
+                data = _predict(suite, jpeg, timeout)
+                dets = _normalize_detections(suite, data)
         except Exception as exc:  # noqa: BLE001
             _write_failure(
                 failures_root, suite, fx["id"], fx["file"], f"predict_error: {exc}"
@@ -822,6 +860,7 @@ def score_suite(
     failures_root: Path,
     *,
     via_bridge_preprocess: bool = False,
+    via_tiled_sync: bool = False,
 ) -> dict[str, Any]:
     meta = PACKS.get(suite) or {}
     tier = str(gt.get("tier") or meta.get("tier") or "A").upper()
@@ -852,6 +891,7 @@ def score_suite(
             timeout,
             failures_root,
             via_bridge_preprocess=via_bridge_preprocess,
+            via_tiled_sync=via_tiled_sync,
         )
     # Tier A detection — faces/pose may use loose labels (face / person_pose)
     require_labels = suite not in ("faces", "pose")
@@ -864,6 +904,7 @@ def score_suite(
         failures_root,
         require_labels=require_labels,
         via_bridge_preprocess=via_bridge_preprocess,
+        via_tiled_sync=via_tiled_sync,
     )
 
 
@@ -877,6 +918,7 @@ def run_eval(
     *,
     packs_arg: str = "core",
     via_bridge_preprocess: bool = False,
+    via_tiled_sync: bool = False,
 ) -> int:
     thresholds = _load_yaml(thresholds_path)
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
@@ -922,6 +964,7 @@ def run_eval(
             timeout,
             failures_root,
             via_bridge_preprocess=via_bridge_preprocess,
+            via_tiled_sync=via_tiled_sync,
         )
 
     if hard_error:
@@ -942,6 +985,7 @@ def run_eval(
         "packs": packs_arg,
         "suites": suites,
         "via_bridge_preprocess": via_bridge_preprocess,
+        "via_tiled_sync": via_tiled_sync,
         "metrics": metrics,
         "threshold_breaches": breaches,
         "baseline_regressions": regressions,
@@ -995,6 +1039,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             "(PR1 baseline; no tiling). Uses current BRIDGE_MAX_WIDTH default."
         ),
     )
+    parser.add_argument(
+        "--via-tiled-sync",
+        action="store_true",
+        help=(
+            "vehicles/objects: call infer_*_tiled_sync (same núcleo as bridge). "
+            "Mutually exclusive with --via-bridge-preprocess for those suites."
+        ),
+    )
     args = parser.parse_args(argv)
 
     out = Path(args.out).resolve()
@@ -1024,6 +1076,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         timeout=args.timeout,
         packs_arg=args.packs,
         via_bridge_preprocess=bool(args.via_bridge_preprocess),
+        via_tiled_sync=bool(args.via_tiled_sync),
     )
 
 

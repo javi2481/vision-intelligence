@@ -150,3 +150,18 @@ async def infer_objects(
         logger.debug("Object detection error: %s", data.get("errorMsg"))
         return None
     return normalize_object_detection_result(data)
+
+
+def infer_objects_tiled_sync(frame_hires) -> Optional[list[dict[str, Any]]]:
+    """InferenceSlicer sync sobre hires; sin track_id (attach post-slicer)."""
+    from detection.common.tiled_infer import infer_tiled_sync
+
+    return infer_tiled_sync(
+        frame_hires,
+        base_url=PADDLEX_OBJECTS_URL,
+        predict_path=PADDLEX_OBJECTS_PREDICT_PATH,
+        normalize_response=normalize_object_detection_result,
+        capability="objects",
+        timeout=HTTP_TIMEOUT,
+        log=logger,
+    )

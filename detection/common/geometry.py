@@ -11,8 +11,9 @@ from typing import Any, Optional
 import cv2
 
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "70"))
-# Ancho máximo enviado a PaddleX; frame_hires se conserva para OCR/crop/preview.
-BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "960"))
+# Ancho máximo del JPEG de caps no tileadas; frame_hires para OCR/crop/preview.
+# Con ENABLE_INFER_TILING, vehicles/objects usan INFER_SLICE_WH sobre hires.
+BRIDGE_MAX_WIDTH = int(os.getenv("BRIDGE_MAX_WIDTH", "1920"))
 
 
 def encode_jpeg(frame, quality: Optional[int] = None) -> Optional[bytes]:

@@ -85,7 +85,7 @@ Antes de merge: `pip install --dry-run` (o resolve en imagen bridge) y **dejar s
 | Env | Significado |
 |-----|-------------|
 | `INFER_SLICE_WH` | Tile en px; default = medido en PR1 |
-| `INFER_OVERLAP_WH` | Solape en px (`< slice_wh`) |
+| `INFER_OVERLAP_WH` | Solape en px (`< slice_wh`); default **100** = supervision 0.28 |
 | `ENABLE_INFER_TILING` | Feature flag |
 | `INFER_TILE_THREAD_WORKERS` | Default **1** |
 
@@ -95,10 +95,40 @@ Slicer sobre **frame_hires**. Caps no tileadas: JPEG `frame_infer` + scale en su
 Función **`class_id_for_tile_nms(...)`** (mapa label→id **dentro de la capacidad**). Solo para el NMS interno del slicer. **No** reutilizar en PR3.
 
 ### NMS capa A
-`overlap_filter=NON_MAX_SUPPRESSION`, `overlap_metric=IOU`, `thread_workers=1`. Documentar vs capa B.
+`overlap_filter=NON_MAX_SUPPRESSION`, `overlap_metric=IOU`, `thread_workers=1`
+(defaults de [InferenceSlicer 0.28](https://supervision.roboflow.com/0.28.0/detection/tools/inference_slicer/)).
+Implementado en [`detection/common/tiled_infer.py`](detection/common/tiled_infer.py)
+(`infer_tiled_sync` + `class_id_for_tile_nms`).
+
+**Capa A vs B:** A = NMS **intra-capacidad** dentro del slicer (`class_id_for_tile_nms`
+por label de vehicles u objects). B (PR3) = NMS **cross-cap** tras remapear con
+`class_id_for_cross_cap_nms` por `entity_type`. No reutilizar el mapa de A en B.
+
+### Fuentes stack oficiales (PR2)
+- **supervision 0.28 InferenceSlicer:** `slice_wh` default 640, `overlap_wh` default **100**,
+  `thread_workers` default 1, `iou_threshold` 0.5, `overlap_metric` IOU.
+  Tras cada tile, `_run_callback` llama `move_detections(offset)` → cajas en coords del
+  frame completo ([docs 0.28](https://supervision.roboflow.com/0.28.0/detection/tools/inference_slicer/);
+  FAQ overlap [detect small objects](https://supervision.roboflow.com/latest/how_to/detect_small_objects/)).
+  `with_nms` con `class_agnostic=False` exige `class_id` + `confidence`
+  ([Detections.with_nms](https://supervision.roboflow.com/latest/detection/core/)).
+- **httpx:** `Client` “can be shared between threads” (docstring sync Client); VI usa
+  `thread_workers=1` por default del slicer.
+- **PaddleX serving (oficial):**
+  - OD: `POST /object-detection`, body `image` (URL o Base64); result
+    `detectedObjects[]` con `bbox` xyxy + `categoryName`
+    ([object detection](https://paddlepaddle.github.io/PaddleX/latest/en/pipeline_usage/tutorials/cv_pipelines/object_detection.html)).
+  - Vehicles: `POST /vehicle-attribute-recognition`, body `image`; result
+    `vehicles[]` con `bbox` xyxy + atributos
+    ([vehicle attribute](https://paddlepaddle.github.io/PaddleX/latest/en/pipeline_usage/tutorials/cv_pipelines/vehicle_attribute_recognition.html)).
+  - **No documentado** en esas páginas: resize/preprocess interno ni tamaño de tensor
+    del serving. No afirmar un input size interno; `INFER_SLICE_WH` viene de la
+    medición JPEG del bridge (PR1), no de docs PaddleX.
 
 ### Exit criteria PR2
 Core bridge-tiles ≥ baseline PR1 (960); test tiling on/off OK; dry-run deps sin `opencv-python` GUI duplicado; harness usa sync core; doc NMS-A; default ancho 1920.
+
+**Smoke 2026-07-24 (vehicles Core):** tiled `bbox_match_rate` **0.358** = `--via-bridge-preprocess` **0.358** (direct bytes 0.4691). Ver [`pr2-tiling-smoke-vehicles.md`](pr2-tiling-smoke-vehicles.md). Flag tiling sigue en `false` por default.
 
 ---
 

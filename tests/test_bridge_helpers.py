@@ -41,12 +41,13 @@ from detection.vehicles import (
 
 class MaybeResizeForInferTests(unittest.TestCase):
     def test_above_threshold_downscales_and_returns_scale_factors(self) -> None:
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        # Wider than default BRIDGE_MAX_WIDTH (1920) so downscale is exercised.
+        frame = np.zeros((2160, 3840, 3), dtype=np.uint8)
         frame_infer, scale_x, scale_y = maybe_resize_for_infer(frame)
 
         self.assertEqual(frame_infer.shape[1], BRIDGE_MAX_WIDTH)
-        self.assertAlmostEqual(scale_x, 1920 / BRIDGE_MAX_WIDTH)
-        self.assertAlmostEqual(scale_y, 1080 / frame_infer.shape[0])
+        self.assertAlmostEqual(scale_x, 3840 / BRIDGE_MAX_WIDTH)
+        self.assertAlmostEqual(scale_y, 2160 / frame_infer.shape[0])
 
     def test_at_or_below_threshold_is_pass_through(self) -> None:
         w = BRIDGE_MAX_WIDTH
@@ -60,7 +61,7 @@ class MaybeResizeForInferTests(unittest.TestCase):
 
 class ScaleDetectionsTests(unittest.TestCase):
     def test_round_trip_scales_bbox_back_to_hires(self) -> None:
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = np.zeros((2160, 3840, 3), dtype=np.uint8)
         _, scale_x, scale_y = maybe_resize_for_infer(frame)
         dets = [
             {

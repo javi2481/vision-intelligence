@@ -1,3 +1,6 @@
 # Pin exacto: evita fallos de hash por wheels parciales/cache en Docker Desktop
 opencv-python-headless==4.10.0.84
 httpx==0.27.2
+# InferenceSlicer (NMS-A). Declara opencv-python (GUI); el Dockerfile fuerza
+# headless tras el install — ver bridge/Dockerfile.
+supervision==0.28.0
