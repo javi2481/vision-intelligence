@@ -28,6 +28,25 @@ OCR_HTTP_TIMEOUT = float(os.getenv("OCR_HTTP_TIMEOUT", "5"))
 PLATE_REGEX = re.compile(r"^[A-Z0-9]{5,8}$")
 _OCR_MIN_CROP_PX = 8
 
+# parse_plate instrumentation (process-local; reset between tests/runs).
+_plate_parse_stats: dict[str, int] = {
+    "total": 0,
+    "rejected_regex": 0,
+    "accepted": 0,
+}
+
+
+def reset_plate_parse_stats() -> None:
+    """Zero parse_plate counters (tests / measurement runs)."""
+    _plate_parse_stats["total"] = 0
+    _plate_parse_stats["rejected_regex"] = 0
+    _plate_parse_stats["accepted"] = 0
+
+
+def plate_parse_stats() -> dict[str, int]:
+    """Snapshot of parse_plate counters: total / rejected_regex / accepted."""
+    return dict(_plate_parse_stats)
+
 
 def crop_bbox(frame, bbox: list[float]) -> Optional[Any]:
     """Recorta frame al bbox clippeado. None si el crop es degenerado."""
@@ -45,12 +64,19 @@ def crop_bbox(frame, bbox: list[float]) -> Optional[Any]:
 def parse_plate(
     rec_texts: list[Any], rec_scores: list[Any]
 ) -> Optional[dict[str, Any]]:
-    """Normaliza textos OCR y devuelve el match de patente de mayor score."""
+    """Normaliza textos OCR y devuelve el match de patente de mayor score.
+
+    Counters (see plate_parse_stats): total candidates, rejected_regex, accepted
+    (candidates that match PLATE_REGEX).
+    """
     best: Optional[dict[str, Any]] = None
     for text, score in zip(rec_texts or [], rec_scores or []):
+        _plate_parse_stats["total"] += 1
         normalized = re.sub(r"[^A-Z0-9]", "", str(text).upper())
         if not PLATE_REGEX.match(normalized):
+            _plate_parse_stats["rejected_regex"] += 1
             continue
+        _plate_parse_stats["accepted"] += 1
         score_f = float(score or 0.0)
         if best is None or score_f > best["score"]:
             best = {"text": normalized, "score": score_f}

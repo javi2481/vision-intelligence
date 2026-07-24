@@ -100,7 +100,7 @@ Ver README raíz (§ RAM del host). Anchors `x-limits-default` (8 GB / default) 
 
 | Var | Default | Nota |
 |-----|---------|------|
-| `BRIDGE_MAX_WIDTH` | 960 | Bajar a 640 en CPU saturada |
+| `BRIDGE_MAX_WIDTH` | 960 | Max JPEG width to PaddleX (foto one-shot). Lower if OOMKilled; raising is a measured change (tiling plan PR2), not a casual tweak |
 | `HTTP_TIMEOUT` | 30 | Subir si scene/seg tarda |
 | `OCR_TOPK` / `OCR_HTTP_TIMEOUT` | 3 / 5 | Limitar costo OCR |
 

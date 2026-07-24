@@ -2,6 +2,7 @@
 # Do NOT install into bridge/adapter Docker images.
 # Usage: python -m pip install -r scripts/requirements-eval.txt
 
+opencv-python-headless==4.10.0.84
 fiftyone==1.4.1
 Pillow==11.1.0
 PyYAML==6.0.2
